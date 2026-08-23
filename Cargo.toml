@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "focuswall-core",
+    "focuswalld",
+]
+resolver = "2"
