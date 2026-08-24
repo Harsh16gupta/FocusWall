@@ -80,6 +80,9 @@ pub enum IpcResponse {
     },
 }
 
+/// Maximum allowed size for a single IPC frame in bytes (64 KB) to protect against memory exhaustion.
+pub const MAX_IPC_MESSAGE_SIZE: usize = 65536;
+
 /// Sends a request over a UnixStream and reads the response frame.
 pub async fn send_ipc_request(stream: &mut UnixStream, req: &IpcRequest) -> Result<IpcResponse, IpcError> {
     let mut payload = serde_json::to_string(req)?;
@@ -91,6 +94,10 @@ pub async fn send_ipc_request(stream: &mut UnixStream, req: &IpcRequest) -> Resu
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader.read_line(&mut line).await?;
+
+    if line.len() > MAX_IPC_MESSAGE_SIZE {
+        return Err(IpcError::Remote("IPC response exceeded maximum allowed frame size".to_string()));
+    }
 
     if line.trim().is_empty() {
         return Err(IpcError::Remote("Empty response from daemon".to_string()));

@@ -8,11 +8,16 @@
   }
 
   body {
-    @apply bg-[#09090b] text-[#f4f4f5] antialiased;
+    @apply bg-[#f8fafc] text-zinc-900 antialiased;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     user-select: none;
+  }
+
+  .dark body,
+  body.dark {
+    @apply bg-[#09090b] text-[#f4f4f5];
   }
 }
 
@@ -27,32 +32,31 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(148, 163, 184, 0.3);
   border-radius: 9999px;
 }
 
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+}
+
 ::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.5);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.22);
 }
 
-/* Subtle glow effects */
-.glow-emerald {
-  box-shadow: 0 0 30px -10px rgba(16, 185, 129, 0.25);
+/* Subtle shadows and borders matching reference design */
+.app-card {
+  @apply bg-white dark:bg-[#121216] border border-zinc-200/90 dark:border-zinc-800/90 rounded-3xl shadow-[0_1px_3px_rgba(0,0,0,0.02)];
 }
 
-.glow-amber {
-  box-shadow: 0 0 30px -10px rgba(245, 158, 11, 0.2);
+.app-card-subtle {
+  @apply bg-white dark:bg-[#121216] border border-zinc-200/80 dark:border-zinc-800/80 rounded-2xl;
 }
 
-/* Hairline glass surface */
-.surface-card {
-  background: rgba(18, 18, 22, 0.65);
-  backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.04), 0 4px 20px -2px rgba(0, 0, 0, 0.5);
-}
-
-.surface-hover:hover {
-  background: rgba(26, 26, 32, 0.8);
-  border-color: rgba(255, 255, 255, 0.12);
+.app-btn-outline {
+  @apply inline-flex items-center justify-center px-3 py-1 text-xs font-medium text-zinc-600 hover:text-zinc-900 bg-white hover:bg-zinc-50 dark:bg-zinc-900 dark:hover:bg-zinc-800 dark:text-zinc-300 dark:hover:text-white border border-zinc-200 dark:border-zinc-700/80 rounded-lg shadow-sm transition;
 }

@@ -60,8 +60,18 @@ impl Database {
         let p = path.as_ref();
         if let Some(parent) = p.parent() {
             let _ = std::fs::create_dir_all(parent);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+            }
         }
         let conn = Connection::open(p)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600));
+        }
         let db = Self { conn };
         db.init_schema()?;
         db.seed_system_policies()?;
@@ -253,6 +263,20 @@ impl Database {
         domains: &[String],
         cooldown_hours: u32,
     ) -> Result<Policy, StorageError> {
+        // Enforce cooldown bounds (1 hour to 8760 hours / 1 year)
+        let clamped_cooldown = cooldown_hours.clamp(1, 8760);
+
+        // Filter and validate domains
+        let valid_domains: Vec<String> = domains
+            .iter()
+            .map(|d| d.trim().to_string())
+            .filter(|d| !d.is_empty() && crate::domain::is_valid_hostname(d))
+            .collect();
+
+        if valid_domains.is_empty() {
+            return Err(StorageError::Sqlite("No valid domains provided for rule".to_string()));
+        }
+
         // Check if rule already exists and is active
         let mut check_stmt = self.conn.prepare(
             "SELECT COUNT(*) FROM policies WHERE name = ?1 AND status != 'removed'",
@@ -263,18 +287,18 @@ impl Database {
         }
 
         let created_at = Utc::now().to_rfc3339();
-        let domains_json = serde_json::to_string(domains)?;
+        let domains_json = serde_json::to_string(&valid_domains)?;
 
         self.conn.execute(
             "INSERT INTO policies (kind, name, domains, schedule_start, schedule_end, timezone, status, created_at, removal_cooldown_hours)
              VALUES ('custom', ?1, ?2, NULL, NULL, 'system', 'active', ?3, ?4)",
-            params![name, domains_json, created_at, cooldown_hours],
+            params![name, domains_json, created_at, clamped_cooldown],
         )?;
 
         let id = self.conn.last_insert_rowid();
         self.log_event(
             "policy_change",
-            &format!("Added custom blocked site '{}' (cooldown: {}h, id: {})", name, cooldown_hours, id),
+            &format!("Added custom blocked site '{}' (cooldown: {}h, id: {})", name, clamped_cooldown, id),
         )?;
 
         self.get_policy_by_id(id)
@@ -300,7 +324,16 @@ impl Database {
 
         let cooldown_h = cooldown_hours_override
             .or(policy.removal_cooldown_hours)
-            .unwrap_or(24);
+            .unwrap_or(24)
+            .clamp(1, 8760);
+
+        let sanitized_reason = reason.map(|r| {
+            if r.len() > 500 {
+                &r[..500]
+            } else {
+                r
+            }
+        });
 
         let now = Utc::now();
         let earliest_removal = now + Duration::hours(cooldown_h as i64);
@@ -319,7 +352,7 @@ impl Database {
                 now_str,
                 cooldown_h,
                 earliest_removal_str,
-                reason,
+                sanitized_reason,
                 rule_id,
             ],
         )?;

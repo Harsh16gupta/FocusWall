@@ -10,15 +10,33 @@ pub struct ResolvedIps {
     pub ipv6: Vec<Ipv6Addr>,
 }
 
+/// Checks if an IPv4 address is safe to block in the firewall without impacting local system networking.
+pub fn is_safe_firewall_target_v4(v4: &Ipv4Addr) -> bool {
+    !v4.is_loopback()
+        && !v4.is_unspecified()
+        && !v4.is_broadcast()
+        && !v4.is_multicast()
+        && !v4.is_link_local()
+        && !v4.is_private() // Do not block private LAN IPs (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+}
+
+/// Checks if an IPv6 address is safe to block in the firewall without impacting local system networking.
+pub fn is_safe_firewall_target_v6(v6: &Ipv6Addr) -> bool {
+    !v6.is_loopback()
+        && !v6.is_unspecified()
+        && !v6.is_multicast()
+        && !((v6.segments()[0] & 0xffc0) == 0xfe80) // Link-local fe80::/10
+}
+
 /// Resolves a list of domain names into unique IPv4 and IPv6 addresses.
-/// Ignores 0.0.0.0 and loopback addresses to avoid capturing sinkholed local addresses.
+/// Filters out loopback, private LAN, multicast, and broadcast addresses to prevent self-lockouts.
 pub fn resolve_domain_ips(domains: &[String]) -> ResolvedIps {
     let mut ipv4_set = HashSet::new();
     let mut ipv6_set = HashSet::new();
 
     for domain in domains {
         let trimmed = domain.trim();
-        if trimmed.is_empty() {
+        if trimmed.is_empty() || !crate::domain::is_valid_hostname(trimmed) {
             continue;
         }
 
@@ -29,12 +47,12 @@ pub fn resolve_domain_ips(domains: &[String]) -> ResolvedIps {
                 for addr in addrs {
                     match addr.ip() {
                         IpAddr::V4(v4) => {
-                            if !v4.is_loopback() && !v4.is_unspecified() {
+                            if is_safe_firewall_target_v4(&v4) {
                                 ipv4_set.insert(v4);
                             }
                         }
                         IpAddr::V6(v6) => {
-                            if !v6.is_loopback() && !v6.is_unspecified() {
+                            if is_safe_firewall_target_v6(&v6) {
                                 ipv6_set.insert(v6);
                             }
                         }

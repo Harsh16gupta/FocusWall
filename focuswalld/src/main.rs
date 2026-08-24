@@ -241,6 +241,13 @@ async fn handle_ipc_client(
             break;
         }
 
+        if line.len() > focuswall_core::MAX_IPC_MESSAGE_SIZE {
+            let _ = write_ipc_response(&mut writer, &IpcResponse::Error {
+                message: "IPC request exceeded maximum allowed frame size (64 KB)".to_string(),
+            }).await;
+            break;
+        }
+
         let req_res: Result<IpcRequest, _> = serde_json::from_str(&line);
         let resp = match req_res {
             Ok(req) => match req {
@@ -472,6 +479,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ipc_listener = match UnixListener::bind(&config.socket_path) {
         Ok(l) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Err(e) = fs::set_permissions(&config.socket_path, fs::Permissions::from_mode(0o660)) {
+                    warn!("Failed to set 0660 permissions on socket: {}", e);
+                }
+            }
             info!("IPC Unix socket listening on {}", config.socket_path.display());
             Some(l)
         }

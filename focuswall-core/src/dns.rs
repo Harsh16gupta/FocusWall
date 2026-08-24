@@ -28,7 +28,7 @@ pub fn generate_dnsmasq_config(blocked_domains: &[String]) -> String {
 
     for domain in blocked_domains {
         let trimmed = domain.trim();
-        if !trimmed.is_empty() {
+        if !trimmed.is_empty() && crate::domain::is_valid_hostname(trimmed) {
             config.push_str(&format!("address=/{}/0.0.0.0\n", trimmed));
             config.push_str(&format!("address=/{}/::\n", trimmed));
         }

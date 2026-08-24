@@ -13,9 +13,14 @@ StartLimitIntervalSec=60
 StartLimitBurst=5
 
 # Security Hardening & Sandboxing
-NoNewPrivileges=false
+NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
 ReadWritePaths=/var/lib/focuswall /run/focuswall /etc/dnsmasq.d /etc/resolv.conf
 RuntimeDirectory=focuswall
 RuntimeDirectoryMode=0770

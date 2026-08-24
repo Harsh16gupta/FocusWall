@@ -4,14 +4,14 @@ FocusWall is a Linux, system-level website-blocking tool designed for self-contr
 
 ---
 
-## 🔒 Two Core Rules
+## Two Core Rules
 
 1. **YouTube is allowed only 20:00–21:00 local time every day**, with **no manual override**, **no temporary unlock**, and **no exceptions**. Blocking is the default state at all other times.
 2. **The UI is never the enforcement mechanism.** A privileged background daemon (`focuswalld`) enforces policy at the system DNS and firewall levels independently. Closing, killing (`kill -9`), or uninstalling the UI never lifts a block.
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 ┌─────────────────────────────┐
@@ -46,7 +46,7 @@ FocusWall is a Linux, system-level website-blocking tool designed for self-contr
 
 ---
 
-## 📦 Project Structure
+## Project Structure
 
 - [`focuswall-core`](file:///home/harsh-gupta/Projects/FocusWall/focuswall-core): Pure Rust library containing schedule evaluation, policy models, Public Suffix List domain normalization, SQLite storage, DNS generator, domain IP resolver, nftables generator, and IPC protocol.
 - [`focuswalld`](file:///home/harsh-gupta/Projects/FocusWall/focuswalld): Privileged background enforcement daemon.
@@ -54,7 +54,7 @@ FocusWall is a Linux, system-level website-blocking tool designed for self-contr
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Build the Workspace
 ```bash
@@ -85,7 +85,7 @@ sudo systemctl enable --now focuswalld
 
 ---
 
-## 💻 CLI Commands
+## CLI Commands
 
 You can interact with `focuswalld` via CLI:
 
@@ -111,7 +111,7 @@ focuswalld logs --limit 20
 
 ---
 
-## 🧪 Testing Suite
+## Testing Suite
 
 Run the full automated test suite (30 unit & integration tests across scheduling boundaries, domain normalization, cooldowns, persistence, DNS, firewall, and IPC):
 
@@ -121,7 +121,16 @@ cargo test --workspace
 
 ---
 
-## 🛡️ Security & Threat Model
+## Operational Guide & Lifecycle
+
+See [`HOW_FOCUSWALL_WORKS.md`](file:///home/harsh-gupta/Projects/FocusWall/HOW_FOCUSWALL_WORKS.md) for a comprehensive explanation of:
+- Autonomous background operation (why you never need to keep the UI open)
+- Automated YouTube 20:00–21:00 schedule transitions
+- The 24-hour custom rule removal cooldown workflow
+
+---
+
+## Security & Threat Model
 
 See [`THREAT_MODEL.md`](file:///home/harsh-gupta/Projects/FocusWall/THREAT_MODEL.md) for full threat model documentation.
 

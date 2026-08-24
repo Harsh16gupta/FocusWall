@@ -68,6 +68,10 @@ pub fn normalize_domain_input(raw_input: &str) -> Result<NormalizedRule, DomainE
         return Err(DomainError::IpOrLocalhostNotAllowed(host));
     }
 
+    if !is_valid_hostname(&host) {
+        return Err(DomainError::InvalidDomain(trimmed.to_string()));
+    }
+
     // Strip leading www. if present
     let stripped_host = host.strip_prefix("www.").unwrap_or(&host);
 
@@ -77,7 +81,7 @@ pub fn normalize_domain_input(raw_input: &str) -> Result<NormalizedRule, DomainE
         None => stripped_host.to_string(),
     };
 
-    if root_domain.is_empty() || !root_domain.contains('.') {
+    if root_domain.is_empty() || !root_domain.contains('.') || !is_valid_hostname(&root_domain) {
         return Err(DomainError::InvalidDomain(trimmed.to_string()));
     }
 
@@ -91,6 +95,26 @@ pub fn normalize_domain_input(raw_input: &str) -> Result<NormalizedRule, DomainE
         root_domain,
         domains,
     })
+}
+
+/// Validates that a domain string strictly conforms to RFC hostname standards
+/// and does not contain any control characters, newlines, slashes, or injection characters.
+pub fn is_valid_hostname(domain: &str) -> bool {
+    if domain.is_empty() || domain.len() > 253 {
+        return false;
+    }
+    for label in domain.split('.') {
+        if label.is_empty() || label.len() > 63 {
+            return false;
+        }
+        if label.starts_with('-') || label.ends_with('-') {
+            return false;
+        }
+        if !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -135,5 +159,20 @@ mod tests {
             normalize_domain_input("nodotdomain"),
             Err(DomainError::InvalidDomain("nodotdomain".to_string()))
         );
+    }
+
+    #[test]
+    fn test_hostname_validation_and_injection_prevention() {
+        assert!(is_valid_hostname("reddit.com"));
+        assert!(is_valid_hostname("sub.domain.co.uk"));
+        assert!(is_valid_hostname("youtube.com"));
+
+        // Injections & invalid characters
+        assert!(!is_valid_hostname("reddit.com\nserver=/evil.com/1.1.1.1"));
+        assert!(!is_valid_hostname("reddit.com/path"));
+        assert!(!is_valid_hostname("reddit; rm -rf /"));
+        assert!(!is_valid_hostname("-reddit.com"));
+        assert!(!is_valid_hostname("reddit-.com"));
+        assert!(!is_valid_hostname(""));
     }
 }
