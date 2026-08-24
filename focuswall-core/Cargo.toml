@@ -11,3 +11,8 @@ serde_json = "1.0"
 url = "2.5"
 publicsuffix = "2.2"
 thiserror = "1.0"
+rusqlite = { version = "0.31", features = ["bundled"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
