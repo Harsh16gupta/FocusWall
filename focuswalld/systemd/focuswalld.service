@@ -1,0 +1,28 @@
+[Unit]
+Description=FocusWall Website Blocking & Self-Control Daemon
+Documentation=https://github.com/Harsh16gupta/FocusWall
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/focuswalld
+Restart=on-failure
+RestartSec=2
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Security Hardening & Sandboxing
+NoNewPrivileges=false
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/focuswall /run/focuswall /etc/dnsmasq.d /etc/resolv.conf
+RuntimeDirectory=focuswall
+RuntimeDirectoryMode=0770
+StateDirectory=focuswall
+StateDirectoryMode=0700
+ConfigurationDirectory=focuswall
+ConfigurationDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target

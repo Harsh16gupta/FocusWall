@@ -10,7 +10,7 @@ use tokio::signal::unix::{signal, SignalKind};
 use tracing::{error, info, warn};
 
 use focuswall_core::{
-    evaluate_youtube_state, Database, DnsManager, PolicyKind,
+    evaluate_youtube_state, DaemonConfig, Database, DnsManager, PolicyKind,
 };
 
 #[derive(Parser, Debug)]
@@ -19,21 +19,25 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Path to SQLite database file
-    #[arg(long, default_value = "/var/lib/focuswall/focuswall.db")]
-    db_path: PathBuf,
+    /// Path to static daemon configuration file (TOML)
+    #[arg(short, long, default_value = "/etc/focuswall/config.toml")]
+    config: PathBuf,
 
-    /// Path to dnsmasq configuration file
-    #[arg(long, default_value = "/etc/dnsmasq.d/focuswall.conf")]
-    dns_conf_path: PathBuf,
+    /// Path to SQLite database file (overrides config file if specified)
+    #[arg(long)]
+    db_path: Option<PathBuf>,
+
+    /// Path to dnsmasq configuration file (overrides config file if specified)
+    #[arg(long)]
+    dns_conf_path: Option<PathBuf>,
 
     /// Override current time for deterministic testing/simulation (e.g. '20:30:00' or RFC3339)
     #[arg(long)]
     fake_now: Option<String>,
 
     /// Polling interval in seconds for schedule evaluation
-    #[arg(long, default_value_t = 15)]
-    poll_interval_secs: u64,
+    #[arg(long)]
+    poll_interval_secs: Option<u64>,
 
     /// Run single reconciliation cycle and exit (for testing/diagnostics)
     #[arg(long)]
@@ -49,8 +53,12 @@ enum Commands {
         fake_now: Option<String>,
 
         /// Path to SQLite database file
-        #[arg(long, default_value = "/var/lib/focuswall/focuswall.db")]
-        db_path: PathBuf,
+        #[arg(long)]
+        db_path: Option<PathBuf>,
+
+        /// Path to configuration file
+        #[arg(short, long, default_value = "/etc/focuswall/config.toml")]
+        config: PathBuf,
     },
 }
 
@@ -128,16 +136,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
 
-    if let Some(Commands::Status { fake_now, db_path }) = &cli.command {
-        return print_status(db_path, fake_now.as_deref());
+    // Load static config file or fall back to defaults
+    let mut config = DaemonConfig::load_from_file(&cli.config).unwrap_or_default();
+
+    // Command-line flag overrides
+    if let Some(db_p) = cli.db_path {
+        config.db_path = db_p;
+    }
+    if let Some(dns_p) = cli.dns_conf_path {
+        config.dns_conf_path = dns_p;
+    }
+    if let Some(poll_secs) = cli.poll_interval_secs {
+        config.poll_interval_secs = poll_secs;
+    }
+
+    if let Some(Commands::Status { fake_now, db_path, config: cfg_path }) = &cli.command {
+        let status_config = DaemonConfig::load_from_file(cfg_path).unwrap_or_default();
+        let target_db = db_path.clone().unwrap_or(status_config.db_path);
+        return print_status(&target_db, fake_now.as_deref());
     }
 
     info!("Starting focuswalld daemon...");
-    info!("Database path: {}", cli.db_path.display());
-    info!("DNS configuration path: {}", cli.dns_conf_path.display());
+    info!("Configuration file: {}", cli.config.display());
+    info!("Database path: {}", config.db_path.display());
+    info!("DNS configuration path: {}", config.dns_conf_path.display());
 
     // Initialize Database and DNS Manager
-    let db = match Database::open(&cli.db_path) {
+    let db = match Database::open(&config.db_path) {
         Ok(d) => d,
         Err(e) => {
             error!("Failed to initialize database: {}", e);
@@ -145,10 +170,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let dns_mgr = DnsManager::new(&cli.dns_conf_path);
+    let dns_mgr = DnsManager::new(&config.dns_conf_path);
 
     // Notify systemd that the daemon is initialized and ready
     let _ = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]);
+    let _ = db.log_event("daemon_start", "focuswalld started successfully");
 
     let mut last_applied_domains: Option<Vec<String>> = None;
     let mut sigterm = signal(SignalKind::terminate())?;
@@ -202,7 +228,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(cli.poll_interval_secs)) => {
+            _ = tokio::time::sleep(Duration::from_secs(config.poll_interval_secs)) => {
                 // Next tick
             }
             _ = sigterm.recv() => {
@@ -216,6 +242,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    let _ = db.log_event("daemon_stop", "focuswalld stopping cleanly");
     let _ = sd_notify::notify(true, &[sd_notify::NotifyState::Stopping]);
     Ok(())
 }

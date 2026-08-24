@@ -1,0 +1,22 @@
+# FocusWall Daemon Configuration (/etc/focuswall/config.toml)
+
+# Path to persistent SQLite database
+db_path = "/var/lib/focuswall/focuswall.db"
+
+# Path to generated dnsmasq configuration
+dns_conf_path = "/etc/dnsmasq.d/focuswall.conf"
+
+# Path to IPC Unix domain socket
+socket_path = "/run/focuswall/focuswall.sock"
+
+# Log verbosity: trace, debug, info, warn, error
+log_level = "info"
+
+# Schedule evaluation interval in seconds
+poll_interval_secs = 15
+
+# Block known DNS-over-HTTPS / DNS-over-TLS public resolvers at firewall
+doh_blocking_enabled = true
+
+# DNS backend provider
+dns_backend = "dnsmasq"
