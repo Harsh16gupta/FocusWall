@@ -1,7 +1,7 @@
 # FocusWall Progress Log
 
 ## Current Milestone
-Milestone 5 — Custom website rules (Phase 3 target)
+Milestone 6 — Tauri + React UI (Phase 5 target)
 
 ## Completed
 - [Milestone 0] 2026-08-24: Created project documentation (IMPLEMENTATION_PLAN.md, TESTING.md, THREAT_MODEL.md, PROGRESS.md) and initialized Cargo workspace with focuswall-core and focuswalld crates. Tested workspace compilation with `cargo check` and `cargo build`.
@@ -10,9 +10,10 @@ Milestone 5 — Custom website rules (Phase 3 target)
 - [Milestone 3] 2026-08-24: Implemented static TOML configuration parsing (`/etc/focuswall/config.toml`), created production `focuswalld.service` systemd unit file with crash-burst limit protection (`StartLimitBurst=5`, `StartLimitIntervalSec=60`) and fail-closed persistence, added lifecycle audit events (`daemon_start`, `daemon_stop`), and established comprehensive integration test suites across `focuswall-core` and `focuswalld`.
 - [Milestone 4] 2026-08-24: Implemented `nftables` IP-level backstop (`firewall.rs`) with dual IPv4 and IPv6 support (`@blocked_ipv4`, `@blocked_ipv6`), dynamic domain IP resolution (`resolver.rs`), and public DoH/DoT resolver closure rules (`@doh_ipv4`, `@doh_ipv6`) to block DNS bypass attempts during enforcement windows. Added dedicated integration tests in `firewall_test.rs`.
 - [Milestone 5] 2026-08-24: Implemented custom website rule normalization (`psl`), the 24-hour server-side removal cooldown workflow, Unix domain socket IPC server and framing (`ipc.rs`), CLI rule management subcommands (`add-rule`, `request-removal`, `confirm-removal`, `cancel-removal`, `logs`), and comprehensive integration tests (`normalization_test.rs`, `cooldown_workflow_test.rs`, `ipc_integration_test.rs`).
+- [Milestone 6] 2026-08-24: Implemented `focuswall-ui` (Tauri v2 + React 18 + TypeScript + Tailwind CSS) communicating exclusively via Unix domain socket IPC. Built the Dashboard with YouTube live countdown and system status, Add Website flow with Public Suffix List normalization preview and confirmation modal, Blocked Websites list with locked system policy and live 24-hour cooldown countdowns, and the Audit Logs viewer.
 
 ## In Progress
-- Completed Milestone 5. Ready for Milestone 6 (Tauri + React UI).
+- Completed Milestone 6. Ready for Milestone 7 (Full test pass & docs).
 
 ## Open Questions / Flags for Human Review
 - None at this time.
@@ -23,12 +24,5 @@ Milestone 5 — Custom website rules (Phase 3 target)
 - 2026-08-24 Milestone 2: `cargo test --workspace` (12 tests) PASS (schema creation, seeding, audit logging, dnsmasq atomic write & syntax); `focuswalld status` & `--run-once` DNS generation tested at 19:59:59 (BLOCKED), 20:00:00 (ALLOWED), 20:30:00 (ALLOWED), 21:00:00 (BLOCKED).
 - 2026-08-24 Milestone 3: `cargo test --workspace` (19 tests) PASS.
 - 2026-08-24 Milestone 4: `cargo test --workspace` (25 tests) PASS.
-- 2026-08-24 Milestone 5: `cargo test --workspace` (30 tests) PASS:
-  - `focuswall-core` unit tests (19 passed)
-  - `tests/cooldown_workflow_test.rs` (3 passed)
-  - `tests/dns_integration_test.rs` (1 passed)
-  - `tests/firewall_test.rs` (2 passed)
-  - `tests/normalization_test.rs` (2 passed)
-  - `tests/persistence_test.rs` (2 passed)
-  - `tests/daemon_integration_test.rs` (2 passed)
-  - `tests/ipc_integration_test.rs` (1 passed)
+- 2026-08-24 Milestone 5: `cargo test --workspace` (30 tests) PASS.
+- 2026-08-24 Milestone 6: `npm run build` PASS, `cargo check --workspace` PASS, `cargo test --workspace` (30 tests) PASS.

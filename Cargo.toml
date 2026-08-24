@@ -2,5 +2,6 @@
 members = [
     "focuswall-core",
     "focuswalld",
+    "focuswall-ui/src-tauri",
 ]
 resolver = "2"
