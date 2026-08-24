@@ -2,12 +2,13 @@
 //!
 //! Pure business logic, policy structures, scheduling calculations,
 //! domain normalization, persistent storage, configuration, DNS management,
-//! domain IP resolution, and nftables firewall backstop.
+//! domain IP resolution, nftables firewall backstop, and IPC socket protocol.
 
 pub mod config;
 pub mod dns;
 pub mod domain;
 pub mod firewall;
+pub mod ipc;
 pub mod policy;
 pub mod resolver;
 pub mod schedule;
@@ -17,6 +18,7 @@ pub use config::*;
 pub use dns::*;
 pub use domain::*;
 pub use firewall::*;
+pub use ipc::*;
 pub use policy::*;
 pub use resolver::*;
 pub use schedule::*;
