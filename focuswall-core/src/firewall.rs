@@ -151,6 +151,11 @@ impl NftablesManager {
             "Applying atomic nftables ruleset"
         );
 
+        if !crate::is_running_as_root() || cfg!(test) {
+            info!("Skipping direct 'nft' execution (running in test/unprivileged mode)");
+            return Ok(());
+        }
+
         let output = Command::new("nft")
             .args(["-f", self.ruleset_cache_path.to_str().unwrap_or("")])
             .output();
@@ -163,7 +168,6 @@ impl NftablesManager {
             Ok(out) => {
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 warn!("nft command failed: {}", stderr.trim());
-                // In non-root testing environments, warn without hard-crashing
                 Ok(())
             }
             Err(e) => {
@@ -175,6 +179,11 @@ impl NftablesManager {
 
     /// Flushes/deletes the focuswall nftables table.
     pub fn clear_rules(&self) {
+        if !crate::is_running_as_root() || cfg!(test) {
+            info!("Skipping direct 'nft' flush (running in test/unprivileged mode)");
+            return;
+        }
+
         let output = Command::new("nft")
             .args(["delete", "table", "inet", "focuswall"])
             .output();

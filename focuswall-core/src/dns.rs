@@ -73,6 +73,11 @@ impl DnsManager {
 
     /// Attempts to reload dnsmasq via standard signals.
     pub fn reload_dnsmasq(&self) {
+        if !crate::is_running_as_root() || cfg!(test) {
+            info!("Skipping dnsmasq service reload (running in test/unprivileged mode)");
+            return;
+        }
+
         // Attempt 1: systemctl reload-or-restart dnsmasq
         let sys_res = Command::new("systemctl")
             .args(["reload", "dnsmasq"])
@@ -96,7 +101,6 @@ impl DnsManager {
                 info!("Sent SIGHUP to dnsmasq successfully");
             }
             Ok(_) | Err(_) => {
-                // dnsmasq might not be running or installed yet (e.g. during test runs or early dev)
                 warn!("dnsmasq reload signal could not be sent (service may not be running yet)");
             }
         }

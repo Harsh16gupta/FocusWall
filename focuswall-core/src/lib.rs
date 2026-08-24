@@ -21,3 +21,15 @@ pub use policy::*;
 pub use resolver::*;
 pub use schedule::*;
 pub use storage::*;
+
+/// Returns true only if the current process is running with root/superuser privileges.
+pub fn is_running_as_root() -> bool {
+    #[cfg(unix)]
+    {
+        unsafe { libc::geteuid() == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
