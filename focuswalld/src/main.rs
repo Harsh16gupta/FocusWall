@@ -402,6 +402,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load static config file or fall back to defaults
     let mut config = DaemonConfig::load_from_file(&cli.config).unwrap_or_default();
 
+    // When running without root/sudo in development mode, fallback system default paths to /tmp
+    if !focuswall_core::is_running_as_root() {
+        if config.dns_conf_path == PathBuf::from("/etc/dnsmasq.d/focuswall.conf") {
+            config.dns_conf_path = PathBuf::from("/tmp/focuswall_dns.conf");
+            info!("Unprivileged mode: default DNS config redirected to /tmp/focuswall_dns.conf");
+        }
+        if config.socket_path == PathBuf::from("/run/focuswall/focuswall.sock") {
+            config.socket_path = PathBuf::from("/tmp/focuswall.sock");
+            info!("Unprivileged mode: default IPC socket redirected to /tmp/focuswall.sock");
+        }
+        if config.db_path == PathBuf::from("/var/lib/focuswall/focuswall.db") {
+            config.db_path = PathBuf::from("/tmp/focuswall.db");
+            info!("Unprivileged mode: default DB redirected to /tmp/focuswall.db");
+        }
+    }
+
     // Command-line flag overrides
     if let Some(db_p) = cli.db_path {
         config.db_path = db_p;
@@ -420,7 +436,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config
             .db_path
             .parent()
-            .unwrap_or_else(|| std::path::Path::new("/var/lib/focuswall"))
+            .unwrap_or_else(|| std::path::Path::new("/tmp"))
             .to_path_buf()
     });
 

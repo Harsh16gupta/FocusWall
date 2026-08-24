@@ -57,7 +57,11 @@ pub struct Database {
 impl Database {
     /// Opens or creates a SQLite database at the specified path and initializes the schema.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, StorageError> {
-        let conn = Connection::open(path)?;
+        let p = path.as_ref();
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let conn = Connection::open(p)?;
         let db = Self { conn };
         db.init_schema()?;
         db.seed_system_policies()?;
