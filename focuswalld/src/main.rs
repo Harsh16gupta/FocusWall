@@ -10,7 +10,8 @@ use tokio::signal::unix::{signal, SignalKind};
 use tracing::{error, info, warn};
 
 use focuswall_core::{
-    evaluate_youtube_state, DaemonConfig, Database, DnsManager, PolicyKind,
+    evaluate_youtube_state, resolve_domain_ips, DaemonConfig, Database, DnsManager,
+    NftablesManager, PolicyKind,
 };
 
 #[derive(Parser, Debug)]
@@ -30,6 +31,10 @@ struct Cli {
     /// Path to dnsmasq configuration file (overrides config file if specified)
     #[arg(long)]
     dns_conf_path: Option<PathBuf>,
+
+    /// Directory to store firewall nftables cache files
+    #[arg(long)]
+    firewall_cache_dir: Option<PathBuf>,
 
     /// Override current time for deterministic testing/simulation (e.g. '20:30:00' or RFC3339)
     #[arg(long)]
@@ -156,12 +161,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return print_status(&target_db, fake_now.as_deref());
     }
 
+    let firewall_cache_dir = cli.firewall_cache_dir.unwrap_or_else(|| {
+        config
+            .db_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("/var/lib/focuswall"))
+            .to_path_buf()
+    });
+
     info!("Starting focuswalld daemon...");
     info!("Configuration file: {}", cli.config.display());
     info!("Database path: {}", config.db_path.display());
     info!("DNS configuration path: {}", config.dns_conf_path.display());
+    info!("Firewall cache directory: {}", firewall_cache_dir.display());
 
-    // Initialize Database and DNS Manager
+    // Initialize Database, DNS Manager, and Firewall Manager
     let db = match Database::open(&config.db_path) {
         Ok(d) => d,
         Err(e) => {
@@ -171,6 +185,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let dns_mgr = DnsManager::new(&config.dns_conf_path);
+    let nft_mgr = NftablesManager::new(&firewall_cache_dir);
 
     // Notify systemd that the daemon is initialized and ready
     let _ = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]);
@@ -203,9 +218,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 time = %now.format("%H:%M:%S"),
                 youtube_state = ?yt_state,
                 blocked_count = current_blocked_domains.len(),
-                "State transition detected, applying DNS rules"
+                "State transition detected, applying DNS and firewall rules"
             );
 
+            // Layer 1: DNS sinkhole configuration
             if let Err(e) = dns_mgr.apply_blocked_domains(&current_blocked_domains) {
                 error!("Failed to write DNS blocking configuration: {}", e);
                 let _ = db.log_event("enforcement_error", &format!("DNS write failed: {}", e));
@@ -218,8 +234,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         current_blocked_domains.len()
                     ),
                 );
-                last_applied_domains = Some(current_blocked_domains);
             }
+
+            // Layer 2: nftables IP backstop + DoH closure
+            let resolved = resolve_domain_ips(&current_blocked_domains);
+            if let Err(e) = nft_mgr.apply_rules(
+                &resolved.ipv4,
+                &resolved.ipv6,
+                config.doh_blocking_enabled,
+            ) {
+                error!("Failed to apply nftables firewall rules: {}", e);
+                let _ = db.log_event("enforcement_error", &format!("Firewall rules failed: {}", e));
+            } else {
+                let _ = db.log_event(
+                    "policy_change",
+                    &format!(
+                        "Firewall rules updated: IPv4 count={}, IPv6 count={}, DoH blocked={}",
+                        resolved.ipv4.len(),
+                        resolved.ipv6.len(),
+                        config.doh_blocking_enabled
+                    ),
+                );
+            }
+
+            last_applied_domains = Some(current_blocked_domains);
         }
 
         if cli.run_once {
