@@ -120,24 +120,35 @@ export function App() {
       setStatus(data);
     } catch {
       // Fallback local status for browser preview / mock mode
-      const currentHour = now.getHours();
-      const isAllowed = currentHour >= 20 && currentHour < 21;
-      setStatus({
-        current_time: new Date().toISOString(),
-        youtube_state: isAllowed ? 'allowed' : 'blocked',
-        policies: [
-          {
-            id: 1,
-            kind: 'system',
-            name: 'youtube',
-            domains: ['youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be', 'youtube-nocookie.com', 'ytimg.com', 'googlevideo.com'],
-            schedule: { start: '20:00', end: '21:00' },
-            timezone: 'system',
-            status: 'active',
-            created_at: new Date().toISOString(),
-          }
-        ],
-        blocked_domains: isAllowed ? [] : ['youtube.com', 'www.youtube.com', 'i.ytimg.com', 'm.youtube.com'],
+      setStatus((prev) => {
+        const prevQuota = prev?.youtube_quota || {
+          policy_name: 'youtube',
+          date: new Date().toISOString().split('T')[0],
+          daily_quota_seconds: 3600,
+          used_seconds_today: 0,
+          remaining_seconds_today: 3600,
+          is_session_active: false,
+          is_exhausted: false,
+        };
+        const isAllowed = prevQuota.is_session_active && !prevQuota.is_exhausted;
+        return {
+          current_time: new Date().toISOString(),
+          youtube_state: isAllowed ? 'allowed' : 'blocked',
+          policies: [
+            {
+              id: 1,
+              kind: 'system',
+              name: 'youtube',
+              domains: ['youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be', 'youtube-nocookie.com', 'ytimg.com', 'googlevideo.com'],
+              schedule: { start: 'Flexible', end: '1 Hour Daily Limit' },
+              timezone: 'system',
+              status: 'active',
+              created_at: new Date().toISOString(),
+            }
+          ],
+          blocked_domains: isAllowed ? [] : ['youtube.com', 'www.youtube.com', 'i.ytimg.com', 'm.youtube.com'],
+          youtube_quota: prevQuota,
+        };
       });
     }
   };
@@ -149,9 +160,8 @@ export function App() {
     } catch {
       setLogs([
         { id: 1, ts: new Date(Date.now() - 3600000 * 2).toISOString(), event_type: 'daemon_start', detail: 'focuswalld active with fail-closed kernel protection' },
-        { id: 2, ts: new Date(Date.now() - 3600000 * 1.5).toISOString(), event_type: 'dns_intercept', detail: 'Sinkholed query for youtube.com -> 0.0.0.0' },
-        { id: 3, ts: new Date(Date.now() - 3600000).toISOString(), event_type: 'policy_enforce', detail: 'Daily locked schedule active: YouTube blocked outside 20:00-21:00' },
-        { id: 4, ts: new Date(Date.now() - 1800000).toISOString(), event_type: 'dns_intercept', detail: 'Sinkholed query for i.ytimg.com -> 0.0.0.0' },
+        { id: 2, ts: new Date(Date.now() - 3600000 * 1.5).toISOString(), event_type: 'quota_init', detail: 'Daily 1-hour quota initialized: 60m remaining for today' },
+        { id: 3, ts: new Date(Date.now() - 3600000).toISOString(), event_type: 'policy_enforce', detail: 'YouTube guarded by daily 1-hour time budget' },
       ]);
     }
   };
@@ -162,12 +172,94 @@ export function App() {
     setTimeout(() => setIsRefreshing(false), 450);
   };
 
-  useEffect(() => {
-    fetchStatus();
-    fetchLogs();
-    const interval = setInterval(fetchStatus, 5000);
-    return () => clearInterval(interval);
-  }, []);
+  const handleStartSession = async (minutes?: number) => {
+    setActionLoading(true);
+    try {
+      await invokeCommand('start_unlock_session', { policyName: 'youtube', durationMinutes: minutes });
+      await fetchStatus();
+      await fetchLogs();
+    } catch (e: any) {
+      if (status) {
+        const used = status.youtube_quota?.used_seconds_today || 0;
+        const target = minutes ? Math.min(minutes * 60, 3600 - used) : (3600 - used);
+        setStatus({
+          ...status,
+          youtube_state: 'allowed',
+          blocked_domains: [],
+          youtube_quota: {
+            policy_name: 'youtube',
+            date: new Date().toISOString().split('T')[0],
+            daily_quota_seconds: 3600,
+            used_seconds_today: used,
+            remaining_seconds_today: 3600 - used,
+            is_session_active: true,
+            session_started_at: new Date().toISOString(),
+            session_target_seconds: target,
+            is_exhausted: false,
+          }
+        });
+      }
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleStopSession = async () => {
+    setActionLoading(true);
+    try {
+      await invokeCommand('stop_unlock_session', { policyName: 'youtube' });
+      await fetchStatus();
+      await fetchLogs();
+    } catch (e: any) {
+      if (status) {
+        const used = (status.youtube_quota?.used_seconds_today || 0) + 60;
+        setStatus({
+          ...status,
+          youtube_state: 'blocked',
+          blocked_domains: ['youtube.com', 'www.youtube.com', 'i.ytimg.com', 'm.youtube.com'],
+          youtube_quota: {
+            policy_name: 'youtube',
+            date: new Date().toISOString().split('T')[0],
+            daily_quota_seconds: 3600,
+            used_seconds_today: Math.min(3600, used),
+            remaining_seconds_today: Math.max(0, 3600 - used),
+            is_session_active: false,
+            session_started_at: undefined,
+            session_target_seconds: undefined,
+            is_exhausted: used >= 3600,
+          }
+        });
+      }
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleResetDailyQuota = async () => {
+    try {
+      await invokeCommand('reset_daily_quota', { policyName: 'youtube' });
+      await fetchStatus();
+      await fetchLogs();
+    } catch (e: any) {
+      if (status) {
+        setStatus({
+          ...status,
+          youtube_state: 'blocked',
+          blocked_domains: ['youtube.com', 'www.youtube.com', 'i.ytimg.com', 'm.youtube.com'],
+          youtube_quota: {
+            policy_name: 'youtube',
+            date: new Date().toISOString().split('T')[0],
+            daily_quota_seconds: 3600,
+            used_seconds_today: 0,
+            remaining_seconds_today: 3600,
+            is_session_active: false,
+            session_started_at: undefined,
+            is_exhausted: false,
+          }
+        });
+      }
+    }
+  };
 
   // Public Suffix List Client Preview
   useEffect(() => {
@@ -288,39 +380,72 @@ export function App() {
     }
   };
 
-  // YouTube schedule calculations
-  const ytSchedule = useMemo(() => {
-    const currentH = now.getHours();
-    const currentM = now.getMinutes();
-    const currentS = now.getSeconds();
+  useEffect(() => {
+    fetchStatus();
+    fetchLogs();
+    const interval = setInterval(fetchStatus, 3000);
+    return () => clearInterval(interval);
+  }, []);
 
-    if (currentH === 20) {
-      const remainingM = 59 - currentM;
-      const remainingS = 59 - currentS;
+  // YouTube dynamic daily quota calculations
+  const ytQuotaDisplay = useMemo(() => {
+    const quota = status?.youtube_quota;
+    const dailyQuotaSec = quota?.daily_quota_seconds || 3600;
+    const usedSec = quota?.used_seconds_today || 0;
+    const remainingSec = quota?.remaining_seconds_today ?? (dailyQuotaSec - usedSec);
+    const isActive = quota?.is_session_active || false;
+    const isExhausted = quota?.is_exhausted || remainingSec <= 0;
+
+    const usedMins = Math.floor(usedSec / 60);
+    const usedSeconds = usedSec % 60;
+    const remMins = Math.floor(remainingSec / 60);
+    const remSeconds = remainingSec % 60;
+
+    const pctUsed = Math.min(100, Math.round((usedSec / dailyQuotaSec) * 100));
+
+    if (isExhausted) {
       return {
-        state: 'ALLOWED',
-        badge: 'Window Open',
-        timeText: `${String(remainingM).padStart(2, '0')}:${String(remainingS).padStart(2, '0')}`,
-        label: 'remaining before lock',
-      };
-    } else {
-      let diffS: number;
-      if (currentH < 20) {
-        diffS = (20 * 3600) - (currentH * 3600 + currentM * 60 + currentS);
-      } else {
-        diffS = ((24 + 20) * 3600) - (currentH * 3600 + currentM * 60 + currentS);
-      }
-      const hours = Math.floor(diffS / 3600);
-      const mins = Math.floor((diffS % 3600) / 60);
-      const secs = diffS % 60;
-      return {
-        state: 'BLOCKED',
-        badge: 'Strictly Enforced',
-        timeText: `${hours}h ${String(mins).padStart(2, '0')}m ${String(secs).padStart(2, '0')}s`,
-        label: 'until 20:00 unlock window',
+        state: 'BLOCKED' as const,
+        badge: 'Daily Limit Reached',
+        badgeColor: 'bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-400 border-red-200 dark:border-red-500/25',
+        timeText: '00:00 remaining',
+        label: '1 Hour Limit Exhausted (Automatically Locked)',
+        sublabel: 'Resets tomorrow at 00:00:00 local time',
+        pctUsed: 100,
+        usedText: '60m / 60m used',
+        isActive: false,
+        isExhausted: true,
       };
     }
-  }, [now]);
+
+    if (isActive) {
+      return {
+        state: 'ALLOWED' as const,
+        badge: 'Session Active (Unlocked)',
+        badgeColor: 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-500/25',
+        timeText: `${String(remMins).padStart(2, '0')}:${String(remSeconds).padStart(2, '0')}`,
+        label: 'Remaining before auto-lock',
+        sublabel: 'Using daily 1-hour quota',
+        pctUsed,
+        usedText: `${usedMins}m ${usedSeconds}s used / 60m`,
+        isActive: true,
+        isExhausted: false,
+      };
+    }
+
+    return {
+      state: 'BLOCKED' as const,
+      badge: 'Protected (Quota Ready)',
+      badgeColor: 'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-500/25',
+      timeText: `${remMins}m ${String(remSeconds).padStart(2, '0')}s left`,
+      label: 'Available in your daily 1-hour allowance',
+      sublabel: 'Click Unlock to start your session',
+      pctUsed,
+      usedText: `${usedMins}m ${usedSeconds}s used / 60m`,
+      isActive: false,
+      isExhausted: false,
+    };
+  }, [status?.youtube_quota, now]);
 
   const customPolicyCount = (status?.policies?.length || 1) - 1;
   const sinkholedDomainCount = status?.blocked_domains?.length || 4;
@@ -514,49 +639,133 @@ export function App() {
         {/* Viewport Content */}
         <div className="px-8 pb-8 max-w-6xl w-full mx-auto space-y-6 flex-1">
 
-          {/* TAB 1: DASHBOARD (EXACT REFERENCE DESIGN) */}
+          {/* TAB 1: DASHBOARD (DAILY 1-HOUR QUOTA & SESSION CONTROLLER) */}
           {tab === 'dashboard' && (
             <div className="space-y-5 animate-in fade-in duration-150">
               {/* Hero Status Container */}
               <div className="bg-white dark:bg-[#121216] border border-zinc-200/90 dark:border-zinc-800/90 rounded-3xl p-7 shadow-[0_1px_3px_rgba(0,0,0,0.02)] space-y-6">
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-                  {/* Left Column: YouTube Policy Badge & Huge Countdown */}
-                  <div className="space-y-2.5">
+                <div className="flex flex-col md:flex-row md:items-start justify-between gap-6">
+                  {/* Left Column: YouTube Policy Badge & Huge Countdown & Progress */}
+                  <div className="space-y-3 flex-1">
                     <div className="flex items-center space-x-2.5">
                       <span className="text-xs font-bold uppercase tracking-wide text-red-500 flex items-center space-x-1.5">
                         <Radio className="w-3.5 h-3.5 text-red-500" />
-                        <span>YOUTUBE POLICY RULE</span>
+                        <span>YOUTUBE DAILY 1-HOUR BUDGET</span>
                       </span>
-                      <span className="text-xs font-medium px-2.5 py-0.5 rounded-full bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-200/80 dark:border-amber-500/25">
-                        {ytSchedule.badge}
+                      <span className={`text-xs font-medium px-2.5 py-0.5 rounded-full border ${ytQuotaDisplay.badgeColor}`}>
+                        {ytQuotaDisplay.badge}
                       </span>
                     </div>
 
                     <div>
-                      <div className="text-[40px] leading-tight font-bold tracking-tight text-zinc-900 dark:text-white">
-                        {ytSchedule.timeText}
+                      <div className="text-[38px] leading-tight font-bold tracking-tight text-zinc-900 dark:text-white font-mono">
+                        {ytQuotaDisplay.timeText}
                       </div>
                       <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-                        {ytSchedule.label}
+                        {ytQuotaDisplay.label} • <span className="text-zinc-700 dark:text-zinc-300 font-medium">{ytQuotaDisplay.sublabel}</span>
                       </p>
-                      <p className="text-xs text-zinc-600 dark:text-zinc-300 mt-0.5">
-                        Daily Allowed Window: <span className="text-emerald-600 dark:text-emerald-400 font-medium">20:00 – 21:00</span>
-                      </p>
+                    </div>
+
+                    {/* Quota Usage Progress Bar */}
+                    <div className="space-y-1.5 max-w-md pt-1">
+                      <div className="flex justify-between text-[11px] font-mono">
+                        <span className="text-zinc-500 dark:text-zinc-400">Daily Quota Consumed:</span>
+                        <span className="font-semibold text-zinc-800 dark:text-zinc-200">{ytQuotaDisplay.usedText}</span>
+                      </div>
+                      <div className="w-full h-2.5 bg-zinc-100 dark:bg-zinc-800 rounded-full overflow-hidden border border-zinc-200/80 dark:border-zinc-700/80">
+                        <div
+                          className={`h-full transition-all duration-300 ${
+                            ytQuotaDisplay.isExhausted
+                              ? 'bg-red-500'
+                              : ytQuotaDisplay.isActive
+                              ? 'bg-emerald-500 animate-pulse'
+                              : 'bg-amber-500'
+                          }`}
+                          style={{ width: `${ytQuotaDisplay.pctUsed}%` }}
+                        ></div>
+                      </div>
+                    </div>
+
+                    {/* Interactive Session Controls */}
+                    <div className="pt-3 flex flex-wrap items-center gap-2.5">
+                      {ytQuotaDisplay.isActive ? (
+                        <button
+                          disabled={actionLoading}
+                          onClick={handleStopSession}
+                          className="flex items-center space-x-2 px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold shadow-md transition"
+                        >
+                          <Lock className="w-4 h-4" />
+                          <span>Lock / Pause Session (Save Remaining Time)</span>
+                        </button>
+                      ) : ytQuotaDisplay.isExhausted ? (
+                        <div className="flex items-center space-x-3">
+                          <button
+                            disabled
+                            className="px-5 py-2.5 rounded-xl bg-zinc-200 dark:bg-zinc-800 text-zinc-400 dark:text-zinc-500 text-xs font-semibold cursor-not-allowed border border-zinc-300 dark:border-zinc-700"
+                          >
+                            Daily 1-Hour Quota Exhausted (Locked)
+                          </button>
+                          <button
+                            onClick={handleResetDailyQuota}
+                            className="text-[11px] text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 underline transition"
+                            title="Reset quota for testing"
+                          >
+                            Reset Quota
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            disabled={actionLoading}
+                            onClick={() => handleStartSession()}
+                            className="flex items-center space-x-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-md transition"
+                          >
+                            <ShieldCheck className="w-4 h-4" />
+                            <span>Unlock YouTube (Start Session)</span>
+                          </button>
+                          <button
+                            disabled={actionLoading}
+                            onClick={() => handleStartSession(15)}
+                            className="px-3.5 py-2 rounded-xl bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 text-xs font-medium border border-zinc-200 dark:border-zinc-700 transition"
+                          >
+                            15 min
+                          </button>
+                          <button
+                            disabled={actionLoading}
+                            onClick={() => handleStartSession(30)}
+                            className="px-3.5 py-2 rounded-xl bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 text-xs font-medium border border-zinc-200 dark:border-zinc-700 transition"
+                          >
+                            30 min
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
 
                   {/* Right Column: Circular Lock Icon & Protection Status */}
-                  <div className="flex items-center space-x-4">
-                    <div className="w-20 h-20 rounded-full border border-zinc-200/90 dark:border-zinc-700/80 bg-zinc-50/80 dark:bg-zinc-800/40 flex items-center justify-center flex-shrink-0">
-                      <Lock className="w-7 h-7 text-zinc-900 dark:text-white stroke-[2.2]" />
+                  <div className="flex items-center space-x-4 p-4 rounded-2xl bg-zinc-50 dark:bg-zinc-900/50 border border-zinc-200/80 dark:border-zinc-800/80 flex-shrink-0">
+                    <div className={`w-16 h-16 rounded-2xl border flex items-center justify-center flex-shrink-0 ${
+                      ytQuotaDisplay.isActive
+                        ? 'border-emerald-300 dark:border-emerald-500/40 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                        : 'border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white'
+                    }`}>
+                      {ytQuotaDisplay.isActive ? (
+                        <ShieldCheck className="w-8 h-8 stroke-[2.2]" />
+                      ) : (
+                        <Lock className="w-7 h-7 stroke-[2.2]" />
+                      )}
                     </div>
                     <div>
                       <p className="text-xs text-zinc-400 dark:text-zinc-500">Protection Status</p>
-                      <h3 className="text-xl font-bold text-zinc-900 dark:text-white tracking-wide uppercase">
-                        {ytSchedule.state === 'ALLOWED' ? 'UNLOCKED' : 'LOCKED'}
+                      <h3 className={`text-lg font-bold tracking-wide uppercase ${
+                        ytQuotaDisplay.isActive ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-900 dark:text-white'
+                      }`}>
+                        {ytQuotaDisplay.isActive ? 'UNLOCKED' : 'LOCKED'}
                       </h3>
-                      <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1 max-w-[200px] leading-snug">
-                        All restricted access is blocked outside the allowed window.
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5 max-w-[180px] leading-snug">
+                        {ytQuotaDisplay.isActive
+                          ? 'YouTube is unblocked and usable right now.'
+                          : 'DNS sinkhole and firewall drops active.'}
                       </p>
                     </div>
                   </div>
@@ -568,21 +777,25 @@ export function App() {
                     <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
                     <div>
                       <span className="text-zinc-500 dark:text-zinc-400">DNS Sinkhole </span>
-                      <strong className="text-zinc-800 dark:text-zinc-200 font-semibold font-mono">0.0.0.0 & ::</strong>
+                      <strong className="text-zinc-800 dark:text-zinc-200 font-semibold font-mono">
+                        {ytQuotaDisplay.isActive ? 'Bypassed (Session Active)' : '0.0.0.0 & ::'}
+                      </strong>
                     </div>
                   </div>
                   <div className="flex items-center space-x-2.5">
                     <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
                     <div>
                       <span className="text-zinc-500 dark:text-zinc-400">nftables IP Backstop </span>
-                      <strong className="text-zinc-800 dark:text-zinc-200 font-semibold">Active</strong>
+                      <strong className="text-zinc-800 dark:text-zinc-200 font-semibold">
+                        {ytQuotaDisplay.isActive ? 'Unblocked' : 'Active'}
+                      </strong>
                     </div>
                   </div>
                   <div className="flex items-center space-x-2.5">
                     <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
                     <div>
-                      <span className="text-zinc-500 dark:text-zinc-400">DoH/DoT Bypass </span>
-                      <strong className="text-zinc-800 dark:text-zinc-200 font-semibold">Closed</strong>
+                      <span className="text-zinc-500 dark:text-zinc-400">Daily Limit Mode </span>
+                      <strong className="text-zinc-800 dark:text-zinc-200 font-semibold">1 Hour Max</strong>
                     </div>
                   </div>
                 </div>

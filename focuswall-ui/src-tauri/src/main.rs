@@ -6,7 +6,7 @@ use tokio::net::UnixStream;
 use tauri::command;
 
 use focuswall_core::{
-    send_ipc_request, AuditLogEntry, DaemonConfig, IpcRequest, IpcResponse, Policy,
+    send_ipc_request, AuditLogEntry, DaemonConfig, IpcRequest, IpcResponse, Policy, QuotaStatus,
 };
 
 async fn get_connected_socket() -> Result<UnixStream, String> {
@@ -41,12 +41,85 @@ async fn get_status() -> Result<serde_json::Value, String> {
             youtube_state,
             policies,
             blocked_domains,
+            youtube_quota,
         } => Ok(serde_json::json!({
             "current_time": current_time,
             "youtube_state": youtube_state,
             "policies": policies,
             "blocked_domains": blocked_domains,
+            "youtube_quota": youtube_quota,
         })),
+        IpcResponse::Error { message } => Err(message),
+        _ => Err("Unexpected response from daemon".to_string()),
+    }
+}
+
+#[command]
+async fn start_unlock_session(policy_name: String, duration_minutes: Option<u32>) -> Result<QuotaStatus, String> {
+    let mut stream = get_connected_socket().await?;
+    let resp = send_ipc_request(
+        &mut stream,
+        &IpcRequest::StartUnlockSession {
+            policy_name,
+            duration_minutes,
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    match resp {
+        IpcResponse::QuotaStatus { quota } => Ok(quota),
+        IpcResponse::Error { message } => Err(message),
+        _ => Err("Unexpected response from daemon".to_string()),
+    }
+}
+
+#[command]
+async fn stop_unlock_session(policy_name: String) -> Result<QuotaStatus, String> {
+    let mut stream = get_connected_socket().await?;
+    let resp = send_ipc_request(
+        &mut stream,
+        &IpcRequest::StopUnlockSession { policy_name },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    match resp {
+        IpcResponse::QuotaStatus { quota } => Ok(quota),
+        IpcResponse::Error { message } => Err(message),
+        _ => Err("Unexpected response from daemon".to_string()),
+    }
+}
+
+#[command]
+async fn get_quota_status(policy_name: String) -> Result<QuotaStatus, String> {
+    let mut stream = get_connected_socket().await?;
+    let resp = send_ipc_request(
+        &mut stream,
+        &IpcRequest::GetQuotaStatus { policy_name },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    match resp {
+        IpcResponse::QuotaStatus { quota } => Ok(quota),
+        IpcResponse::Error { message } => Err(message),
+        _ => Err("Unexpected response from daemon".to_string()),
+    }
+}
+
+#[command]
+async fn reset_daily_quota(policy_name: String) -> Result<QuotaStatus, String> {
+    let mut stream = get_connected_socket().await?;
+    let resp = send_ipc_request(
+        &mut stream,
+        &IpcRequest::ResetDailyQuota { policy_name },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    match resp {
+        IpcResponse::QuotaStatus { quota } => Ok(quota),
         IpcResponse::Error { message } => Err(message),
         _ => Err("Unexpected response from daemon".to_string()),
     }
@@ -140,6 +213,10 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_status,
+            start_unlock_session,
+            stop_unlock_session,
+            get_quota_status,
+            reset_daily_quota,
             add_rule,
             request_removal,
             confirm_removal,

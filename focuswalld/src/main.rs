@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 use focuswall_core::{
-    evaluate_youtube_state, normalize_domain_input, resolve_domain_ips,
+    normalize_domain_input, resolve_domain_ips,
     write_ipc_response, DaemonConfig, Database, DnsManager, IpcRequest, IpcResponse,
     NftablesManager, PolicyKind,
 };
@@ -61,7 +61,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Show current enforcement status and policies
+    /// Show current enforcement status, policies, and daily quota
     Status {
         /// Optional simulated time for status inspection
         #[arg(long)]
@@ -73,6 +73,58 @@ enum Commands {
 
         /// Path to configuration file
         #[arg(short, long, default_value = "/etc/focuswall/config.toml")]
+        config: PathBuf,
+    },
+
+    /// Start / unlock a YouTube access session from your daily 1-hour quota
+    UnlockSession {
+        /// Session duration in minutes (default: full remaining daily quota up to 60m)
+        #[arg(long)]
+        minutes: Option<u32>,
+
+        /// Path to SQLite database file
+        #[arg(long)]
+        db_path: Option<PathBuf>,
+
+        /// Path to configuration file
+        #[arg(long, default_value = "/etc/focuswall/config.toml")]
+        config: PathBuf,
+    },
+
+    /// Stop / pause the active unlock session and immediately lock YouTube
+    LockSession {
+        /// Path to SQLite database file
+        #[arg(long)]
+        db_path: Option<PathBuf>,
+
+        /// Path to configuration file
+        #[arg(long, default_value = "/etc/focuswall/config.toml")]
+        config: PathBuf,
+    },
+
+    /// View current daily 1-hour quota usage for YouTube
+    Quota {
+        /// Optional simulated time for quota inspection
+        #[arg(long)]
+        fake_now: Option<String>,
+
+        /// Path to SQLite database file
+        #[arg(long)]
+        db_path: Option<PathBuf>,
+
+        /// Path to configuration file
+        #[arg(long, default_value = "/etc/focuswall/config.toml")]
+        config: PathBuf,
+    },
+
+    /// Reset daily quota usage for testing or admin
+    ResetQuota {
+        /// Path to SQLite database file
+        #[arg(long)]
+        db_path: Option<PathBuf>,
+
+        /// Path to configuration file
+        #[arg(long, default_value = "/etc/focuswall/config.toml")]
         config: PathBuf,
     },
 
@@ -187,7 +239,13 @@ fn get_current_time(simulated: Option<&str>) -> DateTime<Local> {
 fn print_status(db_path: &PathBuf, fake_now: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     let db = Database::open(db_path)?;
     let now = get_current_time(fake_now);
-    let yt_state = evaluate_youtube_state(&now);
+    let _ = db.record_usage_tick("youtube", &now);
+    let quota = db.get_quota_status("youtube", &now)?;
+    let yt_state = if quota.is_session_active && !quota.is_exhausted {
+        focuswall_core::BlockState::Allowed
+    } else {
+        focuswall_core::BlockState::Blocked
+    };
     let policies = db.get_active_policies()?;
     let blocked_domains = db.get_blocked_domains(&now)?;
 
@@ -196,18 +254,33 @@ fn print_status(db_path: &PathBuf, fake_now: Option<&str>) -> Result<(), Box<dyn
     println!("==================================================");
     println!("Current Time (Local): {}", now.format("%Y-%m-%d %H:%M:%S %Z"));
     println!(
-        "YouTube Window Status: [{:?}] (Allowed 20:00 - 21:00)",
-        yt_state
+        "YouTube Daily 1-Hour Quota: {}m {}s used / {}m total",
+        quota.used_seconds_today / 60,
+        quota.used_seconds_today % 60,
+        quota.daily_quota_seconds / 60
+    );
+    println!("Remaining Today: {}m {}s", quota.remaining_seconds_today / 60, quota.remaining_seconds_today % 60);
+    println!(
+        "YouTube Access Status: [{:?}] (Session Active: {}, Exhausted: {})",
+        yt_state, quota.is_session_active, quota.is_exhausted
     );
     println!("Active Policies Count: {}", policies.len());
     println!("Currently Blocked Domains Count: {}", blocked_domains.len());
     println!("--------------------------------------------------");
     println!("Policies:");
     for p in &policies {
-        let state = p.evaluate(&now);
-        let schedule_str = match &p.schedule {
-            Some(w) => format!(" (Allowed {}-{})", w.start.format("%H:%M"), w.end.format("%H:%M")),
-            None => " (24/7 Blocked)".to_string(),
+        let state = if p.kind == PolicyKind::System && p.name == "youtube" {
+            yt_state
+        } else {
+            p.evaluate(&now)
+        };
+        let schedule_str = if p.kind == PolicyKind::System && p.name == "youtube" {
+            format!(" (Daily 1-Hour Quota: {}m left)", quota.remaining_seconds_today / 60)
+        } else {
+            match &p.schedule {
+                Some(w) => format!(" (Allowed {}-{})", w.start.format("%H:%M"), w.end.format("%H:%M")),
+                None => " (24/7 Blocked)".to_string(),
+            }
         };
         let kind_str = match p.kind {
             PolicyKind::System => "SYSTEM",
@@ -254,7 +327,23 @@ async fn handle_ipc_client(
                 IpcRequest::GetStatus => {
                     let db_guard = db.lock().await;
                     let now = get_current_time(fake_now.as_deref());
-                    let yt_state = evaluate_youtube_state(&now);
+                    let _ = db_guard.record_usage_tick("youtube", &now);
+                    let quota = db_guard.get_quota_status("youtube", &now).unwrap_or_else(|_| focuswall_core::QuotaStatus {
+                        policy_name: "youtube".to_string(),
+                        date: now.format("%Y-%m-%d").to_string(),
+                        daily_quota_seconds: 3600,
+                        used_seconds_today: 0,
+                        remaining_seconds_today: 3600,
+                        is_session_active: false,
+                        session_started_at: None,
+                        session_target_seconds: None,
+                        is_exhausted: false,
+                    });
+                    let yt_state = if quota.is_session_active && !quota.is_exhausted {
+                        focuswall_core::BlockState::Allowed
+                    } else {
+                        focuswall_core::BlockState::Blocked
+                    };
                     let policies = db_guard.get_active_policies().unwrap_or_default();
                     let blocked = db_guard.get_blocked_domains(&now).unwrap_or_default();
                     IpcResponse::Status {
@@ -262,6 +351,40 @@ async fn handle_ipc_client(
                         youtube_state: yt_state,
                         policies,
                         blocked_domains: blocked,
+                        youtube_quota: quota,
+                    }
+                }
+                IpcRequest::StartUnlockSession { policy_name, duration_minutes } => {
+                    let db_guard = db.lock().await;
+                    let now = get_current_time(fake_now.as_deref());
+                    match db_guard.start_unlock_session(&policy_name, duration_minutes, &now) {
+                        Ok(quota) => IpcResponse::QuotaStatus { quota },
+                        Err(e) => IpcResponse::Error { message: e.to_string() },
+                    }
+                }
+                IpcRequest::StopUnlockSession { policy_name } => {
+                    let db_guard = db.lock().await;
+                    let now = get_current_time(fake_now.as_deref());
+                    match db_guard.stop_unlock_session(&policy_name, &now) {
+                        Ok(quota) => IpcResponse::QuotaStatus { quota },
+                        Err(e) => IpcResponse::Error { message: e.to_string() },
+                    }
+                }
+                IpcRequest::GetQuotaStatus { policy_name } => {
+                    let db_guard = db.lock().await;
+                    let now = get_current_time(fake_now.as_deref());
+                    let _ = db_guard.record_usage_tick(&policy_name, &now);
+                    match db_guard.get_quota_status(&policy_name, &now) {
+                        Ok(quota) => IpcResponse::QuotaStatus { quota },
+                        Err(e) => IpcResponse::Error { message: e.to_string() },
+                    }
+                }
+                IpcRequest::ResetDailyQuota { policy_name } => {
+                    let db_guard = db.lock().await;
+                    let now = get_current_time(fake_now.as_deref());
+                    match db_guard.reset_daily_quota(&policy_name, &now) {
+                        Ok(quota) => IpcResponse::QuotaStatus { quota },
+                        Err(e) => IpcResponse::Error { message: e.to_string() },
                     }
                 }
                 IpcRequest::AddRule { input, cooldown_hours } => {
@@ -340,6 +463,60 @@ async fn run_cli_command(
             let config = DaemonConfig::load_from_file(&cfg_path).unwrap_or_default();
             let target_db = db_path.unwrap_or(config.db_path);
             print_status(&target_db, fake_now.as_deref())?;
+        }
+        Commands::UnlockSession { minutes, db_path, config: cfg_path } => {
+            let config = DaemonConfig::load_from_file(&cfg_path).unwrap_or_default();
+            let target_db = db_path.unwrap_or(config.db_path);
+            let db = Database::open(&target_db)?;
+            let now = Local::now();
+            let quota = db.start_unlock_session("youtube", minutes, &now)?;
+            println!("==================================================");
+            println!("YouTube Session Unlocked!");
+            println!("==================================================");
+            println!("Session target: {} minutes", minutes.unwrap_or(quota.remaining_seconds_today / 60));
+            println!("Remaining daily allowance: {}m {}s", quota.remaining_seconds_today / 60, quota.remaining_seconds_today % 60);
+            println!("Status: Unblocked. You can now use YouTube.");
+            println!("==================================================");
+        }
+        Commands::LockSession { db_path, config: cfg_path } => {
+            let config = DaemonConfig::load_from_file(&cfg_path).unwrap_or_default();
+            let target_db = db_path.unwrap_or(config.db_path);
+            let db = Database::open(&target_db)?;
+            let now = Local::now();
+            let quota = db.stop_unlock_session("youtube", &now)?;
+            println!("==================================================");
+            println!("YouTube Session Paused / Locked.");
+            println!("==================================================");
+            println!("Used today: {}m {}s / 60m", quota.used_seconds_today / 60, quota.used_seconds_today % 60);
+            println!("Saved for later today: {}m {}s", quota.remaining_seconds_today / 60, quota.remaining_seconds_today % 60);
+            println!("Status: Locked. DNS and firewall blocks active.");
+            println!("==================================================");
+        }
+        Commands::Quota { fake_now, db_path, config: cfg_path } => {
+            let config = DaemonConfig::load_from_file(&cfg_path).unwrap_or_default();
+            let target_db = db_path.unwrap_or(config.db_path);
+            let db = Database::open(&target_db)?;
+            let now = get_current_time(fake_now.as_deref());
+            let _ = db.record_usage_tick("youtube", &now);
+            let quota = db.get_quota_status("youtube", &now)?;
+            println!("==================================================");
+            println!("YouTube Daily 1-Hour Quota Status");
+            println!("==================================================");
+            println!("Date: {}", quota.date);
+            println!("Daily Limit: 60 minutes");
+            println!("Used Today: {}m {}s", quota.used_seconds_today / 60, quota.used_seconds_today % 60);
+            println!("Remaining Today: {}m {}s", quota.remaining_seconds_today / 60, quota.remaining_seconds_today % 60);
+            println!("Session Active: {}", quota.is_session_active);
+            println!("Exhausted: {}", quota.is_exhausted);
+            println!("==================================================");
+        }
+        Commands::ResetQuota { db_path, config: cfg_path } => {
+            let config = DaemonConfig::load_from_file(&cfg_path).unwrap_or_default();
+            let target_db = db_path.unwrap_or(config.db_path);
+            let db = Database::open(&target_db)?;
+            let now = Local::now();
+            let _ = db.reset_daily_quota("youtube", &now)?;
+            println!("Successfully reset YouTube daily quota. 60m remaining.");
         }
         Commands::AddRule { input, cooldown_hours, db_path, config: cfg_path } => {
             let config = DaemonConfig::load_from_file(&cfg_path).unwrap_or_default();
@@ -533,15 +710,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         let now = get_current_time(cli.fake_now.as_deref());
-        let current_blocked_domains = {
+        let (current_blocked_domains, yt_state) = {
             let db_guard = db.lock().await;
-            match db_guard.get_blocked_domains(&now) {
+            let _ = db_guard.record_usage_tick("youtube", &now);
+            let quota = db_guard.get_quota_status("youtube", &now).unwrap_or_else(|_| focuswall_core::QuotaStatus {
+                policy_name: "youtube".to_string(),
+                date: now.format("%Y-%m-%d").to_string(),
+                daily_quota_seconds: 3600,
+                used_seconds_today: 0,
+                remaining_seconds_today: 3600,
+                is_session_active: false,
+                session_started_at: None,
+                session_target_seconds: None,
+                is_exhausted: false,
+            });
+            let state = if quota.is_session_active && !quota.is_exhausted {
+                focuswall_core::BlockState::Allowed
+            } else {
+                focuswall_core::BlockState::Blocked
+            };
+            let domains = match db_guard.get_blocked_domains(&now) {
                 Ok(domains) => domains,
                 Err(e) => {
                     error!("Error evaluating blocked domains: {}", e);
                     Vec::new()
                 }
-            }
+            };
+            (domains, state)
         };
 
         let needs_apply = match &last_applied_domains {
@@ -550,7 +745,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         if needs_apply {
-            let yt_state = evaluate_youtube_state(&now);
             info!(
                 time = %now.format("%H:%M:%S"),
                 youtube_state = ?yt_state,
@@ -576,26 +770,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Layer 2: nftables IP backstop + DoH closure
-            let resolved = resolve_domain_ips(&current_blocked_domains);
-            if let Err(e) = nft_mgr.apply_rules(
-                &resolved.ipv4,
-                &resolved.ipv6,
-                config.doh_blocking_enabled,
-            ) {
-                error!("Failed to apply nftables firewall rules: {}", e);
-                let db_guard = db.lock().await;
-                let _ = db_guard.log_event("enforcement_error", &format!("Firewall rules failed: {}", e));
-            } else {
+            if current_blocked_domains.is_empty() {
+                nft_mgr.clear_rules();
                 let db_guard = db.lock().await;
                 let _ = db_guard.log_event(
                     "policy_change",
-                    &format!(
-                        "Firewall rules updated: IPv4 count={}, IPv6 count={}, DoH blocked={}",
-                        resolved.ipv4.len(),
-                        resolved.ipv6.len(),
-                        config.doh_blocking_enabled
-                    ),
+                    "Firewall rules cleared: YouTube session unblocked and no active blocked domains",
                 );
+            } else {
+                let resolved = resolve_domain_ips(&current_blocked_domains);
+                if let Err(e) = nft_mgr.apply_rules(
+                    &resolved.ipv4,
+                    &resolved.ipv6,
+                    config.doh_blocking_enabled,
+                ) {
+                    error!("Failed to apply nftables firewall rules: {}", e);
+                    let db_guard = db.lock().await;
+                    let _ = db_guard.log_event("enforcement_error", &format!("Firewall rules failed: {}", e));
+                } else {
+                    let db_guard = db.lock().await;
+                    let _ = db_guard.log_event(
+                        "policy_change",
+                        &format!(
+                            "Firewall rules updated: IPv4 count={}, IPv6 count={}, DoH blocked={}",
+                            resolved.ipv4.len(),
+                            resolved.ipv6.len(),
+                            config.doh_blocking_enabled
+                        ),
+                    );
+                }
             }
 
             last_applied_domains = Some(current_blocked_domains);

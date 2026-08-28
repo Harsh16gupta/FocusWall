@@ -34,9 +34,22 @@ export interface NormalizedPreview {
   domains: string[];
 }
 
+export interface QuotaStatus {
+  policy_name: string;
+  date: string;
+  daily_quota_seconds: number;
+  used_seconds_today: number;
+  remaining_seconds_today: number;
+  is_session_active: boolean;
+  session_started_at?: string;
+  session_target_seconds?: number;
+  is_exhausted: boolean;
+}
+
 export interface SystemStatus {
   current_time: string;
   youtube_state: BlockState;
   policies: Policy[];
   blocked_domains: string[];
+  youtube_quota?: QuotaStatus;
 }

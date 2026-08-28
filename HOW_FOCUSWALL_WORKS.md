@@ -49,24 +49,19 @@ This document explains how FocusWall functions in your daily workflow, how backg
 
 ---
 
-## 2. Daily Schedule Automation (YouTube 20:00–21:00)
+## 2. Daily 1-Hour Quota Automation (YouTube Flexible Sessions)
 
-FocusWall automatically manages the YouTube access window without requiring any manual interaction:
+FocusWall manages YouTube with a **Daily 1-Hour Time Allowance (3600 seconds)**:
 
-* **00:00:00 – 19:59:59 (Daytime & Night):**
-  * YouTube domains (`youtube.com`, `googlevideo.com`, `ytimg.com`, etc.) are sinkholed to `0.0.0.0` / `::`.
-  * Outbound traffic to YouTube IPs is dropped by `nftables`.
-  * Status: **Strictly Locked**.
-
-* **20:00:00 – 20:59:59 (Allowed Window):**
-  * The background daemon detects the window opening.
-  * DNS sinkhole records for YouTube are removed.
-  * Status: **Unlocked**. You can use YouTube freely during this hour.
-
-* **21:00:00 (Lockdown Re-engagement):**
-  * The background daemon automatically re-applies the DNS sinkhole and firewall drop rules.
-  * Any open YouTube streams or tabs will immediately fail to resolve further video chunks.
-  * Status: **Locked**.
+* **Daily Budget:** You get **1 hour of YouTube usage per calendar day**.
+* **Flexible Sessions:**
+  * When you want to watch YouTube, start a session via the UI (**Unlock YouTube**) or CLI (`focuswalld unlock-session --minutes 30`).
+  * While the session is active, DNS sinkholes and kernel firewall rules are lifted.
+  * When you pause or finish early, click **Lock / Pause Session** (or `focuswalld lock-session`) to save your remaining minutes for later in the day.
+* **Automatic Lockdown at 1 Hour:**
+  * FocusWall automatically counts down active usage.
+  * When the 60 minutes limit is passed, FocusWall **immediately locks YouTube down** with kernel firewall drops and DNS sinkholes.
+  * YouTube remains strictly locked for the rest of the day until resetting at midnight (00:00 local time).
 
 ---
 

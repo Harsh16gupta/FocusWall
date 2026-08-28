@@ -6,7 +6,7 @@ use tokio::net::UnixStream;
 use thiserror::Error;
 
 use crate::policy::{BlockState, Policy};
-use crate::storage::AuditLogEntry;
+use crate::storage::{AuditLogEntry, QuotaStatus};
 
 #[derive(Error, Debug)]
 pub enum IpcError {
@@ -22,7 +22,7 @@ pub enum IpcError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum IpcRequest {
-    /// Query daemon status, YouTube window state, active policies, and blocked domains
+    /// Query daemon status, YouTube window state, active policies, blocked domains, and quota
     GetStatus,
     /// Propose a new custom website rule to block
     AddRule {
@@ -47,6 +47,23 @@ pub enum IpcRequest {
     GetLogs {
         limit: Option<u32>,
     },
+    /// Start or resume an unlock session for a policy (e.g. YouTube)
+    StartUnlockSession {
+        policy_name: String,
+        duration_minutes: Option<u32>,
+    },
+    /// Stop or pause an active unlock session
+    StopUnlockSession {
+        policy_name: String,
+    },
+    /// Retrieve quota status for a policy
+    GetQuotaStatus {
+        policy_name: String,
+    },
+    /// Reset daily quota usage for a policy
+    ResetDailyQuota {
+        policy_name: String,
+    },
 }
 
 /// Responses sent by `focuswalld` to the client.
@@ -58,6 +75,7 @@ pub enum IpcResponse {
         youtube_state: BlockState,
         policies: Vec<Policy>,
         blocked_domains: Vec<String>,
+        youtube_quota: QuotaStatus,
     },
     RuleAdded {
         policy: Policy,
@@ -74,6 +92,9 @@ pub enum IpcResponse {
     },
     Logs {
         entries: Vec<AuditLogEntry>,
+    },
+    QuotaStatus {
+        quota: QuotaStatus,
     },
     Error {
         message: String,

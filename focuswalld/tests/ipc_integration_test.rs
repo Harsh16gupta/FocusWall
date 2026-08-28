@@ -34,11 +34,45 @@ async fn mock_ipc_server(socket_path: PathBuf, db: Arc<Mutex<Database>>) {
                                 let yt = evaluate_youtube_state(&now);
                                 let policies = db_g.get_active_policies().unwrap_or_default();
                                 let blocked = db_g.get_blocked_domains(&now).unwrap_or_default();
+                                let quota = db_g.get_quota_status("youtube", &now).unwrap();
                                 IpcResponse::Status {
                                     current_time: now.to_rfc3339(),
                                     youtube_state: yt,
                                     policies,
                                     blocked_domains: blocked,
+                                    youtube_quota: quota,
+                                }
+                            }
+                            IpcRequest::StartUnlockSession { policy_name, duration_minutes } => {
+                                let db_g = db_clone.lock().await;
+                                let now = chrono::Local::now();
+                                match db_g.start_unlock_session(&policy_name, duration_minutes, &now) {
+                                    Ok(quota) => IpcResponse::QuotaStatus { quota },
+                                    Err(e) => IpcResponse::Error { message: e.to_string() },
+                                }
+                            }
+                            IpcRequest::StopUnlockSession { policy_name } => {
+                                let db_g = db_clone.lock().await;
+                                let now = chrono::Local::now();
+                                match db_g.stop_unlock_session(&policy_name, &now) {
+                                    Ok(quota) => IpcResponse::QuotaStatus { quota },
+                                    Err(e) => IpcResponse::Error { message: e.to_string() },
+                                }
+                            }
+                            IpcRequest::GetQuotaStatus { policy_name } => {
+                                let db_g = db_clone.lock().await;
+                                let now = chrono::Local::now();
+                                match db_g.get_quota_status(&policy_name, &now) {
+                                    Ok(quota) => IpcResponse::QuotaStatus { quota },
+                                    Err(e) => IpcResponse::Error { message: e.to_string() },
+                                }
+                            }
+                            IpcRequest::ResetDailyQuota { policy_name } => {
+                                let db_g = db_clone.lock().await;
+                                let now = chrono::Local::now();
+                                match db_g.reset_daily_quota(&policy_name, &now) {
+                                    Ok(quota) => IpcResponse::QuotaStatus { quota },
+                                    Err(e) => IpcResponse::Error { message: e.to_string() },
                                 }
                             }
                             IpcRequest::AddRule { input, cooldown_hours } => {

@@ -28,6 +28,8 @@ pub enum StorageError {
     },
     #[error("Rule for domain '{0}' already exists")]
     DuplicateRule(String),
+    #[error("Daily quota exhausted for '{0}'. Remaining: 0 seconds.")]
+    QuotaExhausted(String),
 }
 
 impl From<rusqlite::Error> for StorageError {
@@ -48,6 +50,20 @@ pub struct AuditLogEntry {
     pub ts: String,
     pub event_type: String,
     pub detail: String,
+}
+
+/// Represents the daily quota tracking and active session state for a policy (e.g. YouTube).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuotaStatus {
+    pub policy_name: String,
+    pub date: String,
+    pub daily_quota_seconds: u32,
+    pub used_seconds_today: u32,
+    pub remaining_seconds_today: u32,
+    pub is_session_active: bool,
+    pub session_started_at: Option<String>,
+    pub session_target_seconds: Option<u32>,
+    pub is_exhausted: bool,
 }
 
 pub struct Database {
@@ -111,6 +127,17 @@ impl Database {
                 ts TEXT NOT NULL,
                 event_type TEXT NOT NULL,
                 detail TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS daily_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                policy_name TEXT NOT NULL,
+                date TEXT NOT NULL,
+                used_seconds INTEGER NOT NULL DEFAULT 0,
+                session_active INTEGER NOT NULL DEFAULT 0,
+                session_started_at TEXT,
+                session_target_seconds INTEGER,
+                UNIQUE(policy_name, date)
             );
             ",
         )?;
@@ -468,12 +495,251 @@ impl Database {
         Ok(entries)
     }
 
+    /// Retrieves or creates daily usage record for a policy on a given date.
+    fn ensure_daily_usage(&self, policy_name: &str, date_str: &str) -> Result<(u32, bool, Option<String>, Option<u32>), StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT used_seconds, session_active, session_started_at, session_target_seconds
+             FROM daily_usage
+             WHERE policy_name = ?1 AND date = ?2",
+        )?;
+        let res = stmt.query_row(params![policy_name, date_str], |row| {
+            let used: u32 = row.get(0)?;
+            let active: i64 = row.get(1)?;
+            let started_at: Option<String> = row.get(2)?;
+            let target: Option<u32> = row.get(3)?;
+            Ok((used, active != 0, started_at, target))
+        });
+
+        match res {
+            Ok(data) => Ok(data),
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO daily_usage (policy_name, date, used_seconds, session_active, session_started_at, session_target_seconds)
+                     VALUES (?1, ?2, 0, 0, NULL, NULL)",
+                    params![policy_name, date_str],
+                )?;
+                Ok((0, false, None, None))
+            }
+            Err(e) => Err(StorageError::from(e)),
+        }
+    }
+
+    /// Gets current quota status for a policy (default 3600s = 1 hour quota for YouTube).
+    pub fn get_quota_status<Tz: TimeZone>(
+        &self,
+        policy_name: &str,
+        now: &DateTime<Tz>,
+    ) -> Result<QuotaStatus, StorageError> {
+        let date_str = now.naive_utc().date().format("%Y-%m-%d").to_string();
+        let daily_quota_seconds = 3600; // 1 hour
+
+        let (used_stored, is_active, started_at_opt, target_opt) = self.ensure_daily_usage(policy_name, &date_str)?;
+
+        let mut current_used = used_stored;
+        if is_active {
+            if let Some(ref start_str) = started_at_opt {
+                if let Ok(start_dt) = DateTime::parse_from_rfc3339(start_str) {
+                    let now_utc = now.clone().with_timezone(&Utc);
+                    let start_utc = start_dt.with_timezone(&Utc);
+                    if now_utc > start_utc {
+                        let elapsed = (now_utc - start_utc).num_seconds().max(0) as u32;
+                        current_used = (used_stored + elapsed).min(daily_quota_seconds);
+                    }
+                }
+            }
+        }
+
+        let remaining = daily_quota_seconds.saturating_sub(current_used);
+        let is_exhausted = current_used >= daily_quota_seconds;
+
+        Ok(QuotaStatus {
+            policy_name: policy_name.to_string(),
+            date: date_str,
+            daily_quota_seconds,
+            used_seconds_today: current_used,
+            remaining_seconds_today: remaining,
+            is_session_active: is_active && !is_exhausted,
+            session_started_at: started_at_opt,
+            session_target_seconds: target_opt,
+            is_exhausted,
+        })
+    }
+
+    /// Starts or resumes an unlock session for a policy (e.g. YouTube).
+    pub fn start_unlock_session<Tz: TimeZone>(
+        &self,
+        policy_name: &str,
+        duration_minutes: Option<u32>,
+        now: &DateTime<Tz>,
+    ) -> Result<QuotaStatus, StorageError> {
+        let _ = self.record_usage_tick(policy_name, now)?;
+        let status = self.get_quota_status(policy_name, now)?;
+
+        if status.is_exhausted || status.remaining_seconds_today == 0 {
+            return Err(StorageError::QuotaExhausted(policy_name.to_string()));
+        }
+
+        let date_str = now.naive_utc().date().format("%Y-%m-%d").to_string();
+        let now_str = now.clone().with_timezone(&Utc).to_rfc3339();
+        let target_secs = duration_minutes
+            .map(|m| (m * 60).min(status.remaining_seconds_today))
+            .unwrap_or(status.remaining_seconds_today);
+
+        self.conn.execute(
+            "UPDATE daily_usage
+             SET session_active = 1,
+                 session_started_at = ?1,
+                 session_target_seconds = ?2
+             WHERE policy_name = ?3 AND date = ?4",
+            params![now_str, target_secs, policy_name, date_str],
+        )?;
+
+        let mins = target_secs / 60;
+        self.log_event(
+            "session_start",
+            &format!(
+                "Started unlock session for '{}' (Target: {}m, Remaining daily quota: {}m)",
+                policy_name,
+                mins,
+                status.remaining_seconds_today / 60
+            ),
+        )?;
+
+        self.get_quota_status(policy_name, now)
+    }
+
+    /// Stops / pauses an active unlock session, saving used elapsed seconds.
+    pub fn stop_unlock_session<Tz: TimeZone>(
+        &self,
+        policy_name: &str,
+        now: &DateTime<Tz>,
+    ) -> Result<QuotaStatus, StorageError> {
+        let date_str = now.naive_utc().date().format("%Y-%m-%d").to_string();
+        let (used_stored, is_active, started_at_opt, _) = self.ensure_daily_usage(policy_name, &date_str)?;
+
+        if is_active {
+            let mut elapsed: u32 = 0;
+            if let Some(ref start_str) = started_at_opt {
+                if let Ok(start_dt) = DateTime::parse_from_rfc3339(start_str) {
+                    let now_utc = now.clone().with_timezone(&Utc);
+                    let start_utc = start_dt.with_timezone(&Utc);
+                    if now_utc > start_utc {
+                        elapsed = (now_utc - start_utc).num_seconds().max(0) as u32;
+                    }
+                }
+            }
+
+            let new_used = (used_stored + elapsed).min(3600);
+            self.conn.execute(
+                "UPDATE daily_usage
+                 SET used_seconds = ?1,
+                     session_active = 0,
+                     session_started_at = NULL,
+                     session_target_seconds = NULL
+                 WHERE policy_name = ?2 AND date = ?3",
+                params![new_used, policy_name, date_str],
+            )?;
+
+            self.log_event(
+                "session_stop",
+                &format!(
+                    "Paused unlock session for '{}'. Used today: {}m {}s / 60m",
+                    policy_name,
+                    new_used / 60,
+                    new_used % 60
+                ),
+            )?;
+        }
+
+        self.get_quota_status(policy_name, now)
+    }
+
+    /// Periodic tick called by the daemon to advance elapsed time, auto-expire sessions, and auto-lock at quota exhaustion.
+    pub fn record_usage_tick<Tz: TimeZone>(
+        &self,
+        policy_name: &str,
+        now: &DateTime<Tz>,
+    ) -> Result<QuotaStatus, StorageError> {
+        let date_str = now.naive_utc().date().format("%Y-%m-%d").to_string();
+        let (used_stored, is_active, started_at_opt, target_opt) = self.ensure_daily_usage(policy_name, &date_str)?;
+
+        if is_active {
+            if let Some(ref start_str) = started_at_opt {
+                if let Ok(start_dt) = DateTime::parse_from_rfc3339(start_str) {
+                    let now_utc = now.clone().with_timezone(&Utc);
+                    let start_utc = start_dt.with_timezone(&Utc);
+                    let elapsed = if now_utc > start_utc {
+                        (now_utc - start_utc).num_seconds().max(0) as u32
+                    } else {
+                        0
+                    };
+
+                    let target = target_opt.unwrap_or(3600);
+                    let total_session_used = (used_stored + elapsed).min(3600);
+
+                    // Check if quota exhausted OR session duration target reached
+                    if total_session_used >= 3600 || elapsed >= target {
+                        self.conn.execute(
+                            "UPDATE daily_usage
+                             SET used_seconds = ?1,
+                                 session_active = 0,
+                                 session_started_at = NULL,
+                                 session_target_seconds = NULL
+                             WHERE policy_name = ?2 AND date = ?3",
+                            params![total_session_used, policy_name, date_str],
+                        )?;
+
+                        if total_session_used >= 3600 {
+                            self.log_event(
+                                "quota_exhausted",
+                                &format!("Daily 1-hour quota exhausted for '{}'. Automatically locked for the day.", policy_name),
+                            )?;
+                        } else {
+                            self.log_event(
+                                "session_timeout",
+                                &format!("Unlock session for '{}' completed ({}m used).", policy_name, target / 60),
+                            )?;
+                        }
+                    }
+                }
+            }
+        }
+
+        self.get_quota_status(policy_name, now)
+    }
+
+    /// Resets daily quota usage for a policy (useful for testing and admin resets).
+    pub fn reset_daily_quota<Tz: TimeZone>(
+        &self,
+        policy_name: &str,
+        now: &DateTime<Tz>,
+    ) -> Result<QuotaStatus, StorageError> {
+        let date_str = now.naive_utc().date().format("%Y-%m-%d").to_string();
+        self.conn.execute(
+            "DELETE FROM daily_usage WHERE policy_name = ?1 AND date = ?2",
+            params![policy_name, date_str],
+        )?;
+        self.log_event(
+            "quota_reset",
+            &format!("Daily quota reset for '{}'", policy_name),
+        )?;
+        self.get_quota_status(policy_name, now)
+    }
+
     /// Evaluates which domains are currently BLOCKED across all active policies at time `now`.
     pub fn get_blocked_domains<Tz: TimeZone>(&self, now: &DateTime<Tz>) -> Result<Vec<String>, StorageError> {
         let policies = self.get_active_policies()?;
         let mut blocked_domains = Vec::new();
         for policy in policies {
-            if policy.evaluate(now) == BlockState::Blocked {
+            let is_blocked = if policy.kind == PolicyKind::System && policy.name == "youtube" {
+                // YouTube uses dynamic daily 1-hour quota session
+                let quota = self.get_quota_status("youtube", now)?;
+                !(quota.is_session_active && !quota.is_exhausted)
+            } else {
+                policy.evaluate(now) == BlockState::Blocked
+            };
+
+            if is_blocked {
                 for domain in policy.domains {
                     if !blocked_domains.contains(&domain) {
                         blocked_domains.push(domain);
