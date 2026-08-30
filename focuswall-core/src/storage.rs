@@ -530,7 +530,7 @@ impl Database {
         policy_name: &str,
         now: &DateTime<Tz>,
     ) -> Result<QuotaStatus, StorageError> {
-        let date_str = now.naive_utc().date().format("%Y-%m-%d").to_string();
+        let date_str = now.naive_local().date().format("%Y-%m-%d").to_string();
         let daily_quota_seconds = 3600; // 1 hour
 
         let (used_stored, is_active, started_at_opt, target_opt) = self.ensure_daily_usage(policy_name, &date_str)?;
@@ -579,7 +579,7 @@ impl Database {
             return Err(StorageError::QuotaExhausted(policy_name.to_string()));
         }
 
-        let date_str = now.naive_utc().date().format("%Y-%m-%d").to_string();
+        let date_str = now.naive_local().date().format("%Y-%m-%d").to_string();
         let now_str = now.clone().with_timezone(&Utc).to_rfc3339();
         let target_secs = duration_minutes
             .map(|m| (m * 60).min(status.remaining_seconds_today))
@@ -614,7 +614,7 @@ impl Database {
         policy_name: &str,
         now: &DateTime<Tz>,
     ) -> Result<QuotaStatus, StorageError> {
-        let date_str = now.naive_utc().date().format("%Y-%m-%d").to_string();
+        let date_str = now.naive_local().date().format("%Y-%m-%d").to_string();
         let (used_stored, is_active, started_at_opt, _) = self.ensure_daily_usage(policy_name, &date_str)?;
 
         if is_active {
@@ -660,7 +660,7 @@ impl Database {
         policy_name: &str,
         now: &DateTime<Tz>,
     ) -> Result<QuotaStatus, StorageError> {
-        let date_str = now.naive_utc().date().format("%Y-%m-%d").to_string();
+        let date_str = now.naive_local().date().format("%Y-%m-%d").to_string();
         let (used_stored, is_active, started_at_opt, target_opt) = self.ensure_daily_usage(policy_name, &date_str)?;
 
         if is_active {
@@ -714,7 +714,7 @@ impl Database {
         policy_name: &str,
         now: &DateTime<Tz>,
     ) -> Result<QuotaStatus, StorageError> {
-        let date_str = now.naive_utc().date().format("%Y-%m-%d").to_string();
+        let date_str = now.naive_local().date().format("%Y-%m-%d").to_string();
         self.conn.execute(
             "DELETE FROM daily_usage WHERE policy_name = ?1 AND date = ?2",
             params![policy_name, date_str],

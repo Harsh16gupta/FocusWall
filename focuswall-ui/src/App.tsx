@@ -212,7 +212,12 @@ export function App() {
       await fetchLogs();
     } catch (e: any) {
       if (status) {
-        const used = (status.youtube_quota?.used_seconds_today || 0) + 60;
+        const quota = status.youtube_quota;
+        let elapsed = 0;
+        if (quota?.session_started_at) {
+          elapsed = Math.max(0, Math.floor((Date.now() - new Date(quota.session_started_at).getTime()) / 1000));
+        }
+        const used = Math.min(3600, (quota?.used_seconds_today || 0) + elapsed);
         setStatus({
           ...status,
           youtube_state: 'blocked',
@@ -221,7 +226,7 @@ export function App() {
             policy_name: 'youtube',
             date: new Date().toISOString().split('T')[0],
             daily_quota_seconds: 3600,
-            used_seconds_today: Math.min(3600, used),
+            used_seconds_today: used,
             remaining_seconds_today: Math.max(0, 3600 - used),
             is_session_active: false,
             session_started_at: undefined,
@@ -387,19 +392,40 @@ export function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // YouTube dynamic daily quota calculations
+  // YouTube dynamic daily quota calculations with real-time live countdown
   const ytQuotaDisplay = useMemo(() => {
     const quota = status?.youtube_quota;
     const dailyQuotaSec = quota?.daily_quota_seconds || 3600;
-    const usedSec = quota?.used_seconds_today || 0;
-    const remainingSec = quota?.remaining_seconds_today ?? (dailyQuotaSec - usedSec);
-    const isActive = quota?.is_session_active || false;
-    const isExhausted = quota?.is_exhausted || remainingSec <= 0;
+    let usedSec = quota?.used_seconds_today || 0;
+    const isInitiallyActive = quota?.is_session_active || false;
+
+    // Calculate live elapsed seconds using current system clock and session_started_at
+    if (isInitiallyActive && quota?.session_started_at) {
+      const startTime = new Date(quota.session_started_at).getTime();
+      const currentTime = now.getTime();
+      if (currentTime > startTime) {
+        const liveElapsed = Math.floor((currentTime - startTime) / 1000);
+        usedSec = Math.min(dailyQuotaSec, usedSec + liveElapsed);
+      }
+    }
+
+    const remainingSec = Math.max(0, dailyQuotaSec - usedSec);
+    const isExhausted = (quota?.is_exhausted ?? false) || remainingSec <= 0;
+    const isActive = isInitiallyActive && !isExhausted;
+
+    // If a session duration limit was set (e.g. 15m or 30m), calculate session countdown
+    let sessionRemainingSec = remainingSec;
+    if (isActive && quota?.session_target_seconds && quota?.session_started_at) {
+      const startTime = new Date(quota.session_started_at).getTime();
+      const currentTime = now.getTime();
+      const liveElapsed = Math.max(0, Math.floor((currentTime - startTime) / 1000));
+      sessionRemainingSec = Math.min(remainingSec, Math.max(0, quota.session_target_seconds - liveElapsed));
+    }
 
     const usedMins = Math.floor(usedSec / 60);
     const usedSeconds = usedSec % 60;
-    const remMins = Math.floor(remainingSec / 60);
-    const remSeconds = remainingSec % 60;
+    const remMins = Math.floor(sessionRemainingSec / 60);
+    const remSeconds = sessionRemainingSec % 60;
 
     const pctUsed = Math.min(100, Math.round((usedSec / dailyQuotaSec) * 100));
 
@@ -424,8 +450,8 @@ export function App() {
         badge: 'Session Active (Unlocked)',
         badgeColor: 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-500/25',
         timeText: `${String(remMins).padStart(2, '0')}:${String(remSeconds).padStart(2, '0')}`,
-        label: 'Remaining before auto-lock',
-        sublabel: 'Using daily 1-hour quota',
+        label: 'Remaining in current active session',
+        sublabel: `${Math.floor(remainingSec / 60)}m ${remainingSec % 60}s remaining today`,
         pctUsed,
         usedText: `${usedMins}m ${usedSeconds}s used / 60m`,
         isActive: true,
@@ -437,7 +463,7 @@ export function App() {
       state: 'BLOCKED' as const,
       badge: 'Protected (Quota Ready)',
       badgeColor: 'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-500/25',
-      timeText: `${remMins}m ${String(remSeconds).padStart(2, '0')}s left`,
+      timeText: `${Math.floor(remainingSec / 60)}m ${String(remainingSec % 60).padStart(2, '0')}s left`,
       label: 'Available in your daily 1-hour allowance',
       sublabel: 'Click Unlock to start your session',
       pctUsed,
