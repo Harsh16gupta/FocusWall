@@ -176,12 +176,11 @@ impl Database {
         }
 
         // 2. Adult Content / Pornography 24/7 Blocking Policy
+        let adult = Policy::adult_system_policy();
+        let domains_json = serde_json::to_string(&adult.domains)?;
         let mut stmt_adult = self.conn.prepare("SELECT COUNT(*) FROM policies WHERE kind = 'system' AND name = 'adult_content'")?;
         let count_adult: i64 = stmt_adult.query_row([], |r| r.get(0))?;
         if count_adult == 0 {
-            let adult = Policy::adult_system_policy();
-            let domains_json = serde_json::to_string(&adult.domains)?;
-
             self.conn.execute(
                 "INSERT INTO policies (kind, name, domains, schedule_start, schedule_end, timezone, status, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -197,7 +196,12 @@ impl Database {
                 ],
             )?;
 
-            self.log_event("daemon_start", "Adult content / porn protection policy seeded (24/7 active block)")?;
+            self.log_event("daemon_start", "Adult content protection policy seeded (24/7 active block)")?;
+        } else {
+            self.conn.execute(
+                "UPDATE policies SET domains = ?1 WHERE kind = 'system' AND name = 'adult_content'",
+                params![domains_json],
+            )?;
         }
 
         Ok(())
