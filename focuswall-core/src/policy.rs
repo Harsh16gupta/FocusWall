@@ -3,7 +3,7 @@
 use chrono::{DateTime, TimeZone};
 use serde::{Deserialize, Serialize};
 
-use crate::domain::YOUTUBE_DOMAINS;
+use crate::domain::{ADULT_DOMAINS, YOUTUBE_DOMAINS};
 use crate::schedule::TimeWindow;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +54,24 @@ impl Policy {
             name: "youtube".to_string(),
             domains: YOUTUBE_DOMAINS.iter().map(|&d| d.to_string()).collect(),
             schedule: Some(TimeWindow::youtube_window()),
+            timezone: "system".to_string(),
+            status: PolicyStatus::Active,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            removal_requested_at: None,
+            removal_cooldown_hours: None,
+            earliest_removal_at: None,
+            removal_reason: None,
+        }
+    }
+
+    /// Creates the standard system policy for Adult / Pornographic Content (24/7 blocked).
+    pub fn adult_system_policy() -> Self {
+        Self {
+            id: None,
+            kind: PolicyKind::System,
+            name: "adult_content".to_string(),
+            domains: ADULT_DOMAINS.iter().map(|&d| d.to_string()).collect(),
+            schedule: None, // Blocked 24/7
             timezone: "system".to_string(),
             status: PolicyStatus::Active,
             created_at: chrono::Utc::now().to_rfc3339(),

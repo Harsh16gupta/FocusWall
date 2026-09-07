@@ -144,11 +144,12 @@ impl Database {
         Ok(())
     }
 
-    /// Seeds the default YouTube policy if it does not already exist.
+    /// Seeds default system policies (YouTube and Adult Content) if they do not already exist.
     fn seed_system_policies(&self) -> Result<(), StorageError> {
-        let mut stmt = self.conn.prepare("SELECT COUNT(*) FROM policies WHERE kind = 'system' AND name = 'youtube'")?;
-        let count: i64 = stmt.query_row([], |r| r.get(0))?;
-        if count == 0 {
+        // 1. YouTube Policy
+        let mut stmt_yt = self.conn.prepare("SELECT COUNT(*) FROM policies WHERE kind = 'system' AND name = 'youtube'")?;
+        let count_yt: i64 = stmt_yt.query_row([], |r| r.get(0))?;
+        if count_yt == 0 {
             let yt = Policy::youtube_system_policy();
             let domains_json = serde_json::to_string(&yt.domains)?;
             let (start, end) = match &yt.schedule {
@@ -173,6 +174,32 @@ impl Database {
 
             self.log_event("daemon_start", "Database initialized and YouTube system policy seeded")?;
         }
+
+        // 2. Adult Content / Pornography 24/7 Blocking Policy
+        let mut stmt_adult = self.conn.prepare("SELECT COUNT(*) FROM policies WHERE kind = 'system' AND name = 'adult_content'")?;
+        let count_adult: i64 = stmt_adult.query_row([], |r| r.get(0))?;
+        if count_adult == 0 {
+            let adult = Policy::adult_system_policy();
+            let domains_json = serde_json::to_string(&adult.domains)?;
+
+            self.conn.execute(
+                "INSERT INTO policies (kind, name, domains, schedule_start, schedule_end, timezone, status, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    "system",
+                    adult.name,
+                    domains_json,
+                    Option::<String>::None,
+                    Option::<String>::None,
+                    adult.timezone,
+                    "active",
+                    adult.created_at,
+                ],
+            )?;
+
+            self.log_event("daemon_start", "Adult content / porn protection policy seeded (24/7 active block)")?;
+        }
+
         Ok(())
     }
 

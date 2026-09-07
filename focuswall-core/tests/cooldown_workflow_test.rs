@@ -34,7 +34,7 @@ fn test_custom_rule_lifecycle_and_cooldown() {
 
     // Verify it is no longer in active policies
     let active_policies = db.get_active_policies().unwrap();
-    assert_eq!(active_policies.len(), 1); // Only system YouTube remains
+    assert_eq!(active_policies.len(), 2); // System policies (YouTube and adult_content) remain
 }
 
 #[test]
@@ -78,7 +78,11 @@ fn test_cancel_removal_request() {
 #[test]
 fn test_daily_1hour_quota_lifecycle() {
     let db = Database::open_in_memory().expect("in-memory db opens");
-    let now = Utc::now();
+    let now = chrono::NaiveDate::from_ymd_opt(2026, 9, 8)
+        .unwrap()
+        .and_hms_opt(10, 0, 0)
+        .unwrap()
+        .and_utc();
 
     // 1. Initially, YouTube has 60m remaining and is not in an active session
     let quota = db.get_quota_status("youtube", &now).unwrap();
@@ -88,18 +92,20 @@ fn test_daily_1hour_quota_lifecycle() {
     assert!(!quota.is_session_active);
     assert!(!quota.is_exhausted);
 
-    // Initial blocked domains must include YouTube
+    // Initial blocked domains must include YouTube and adult content
     let blocked = db.get_blocked_domains(&now).unwrap();
     assert!(blocked.contains(&"youtube.com".to_string()));
+    assert!(blocked.contains(&"pornhub.com".to_string()));
 
     // 2. Start a 20-minute unlock session
     let session = db.start_unlock_session("youtube", Some(20), &now).unwrap();
     assert!(session.is_session_active);
     assert_eq!(session.session_target_seconds, Some(1200));
 
-    // YouTube is now unblocked
+    // YouTube is now unblocked, but adult content remains blocked
     let blocked_after_start = db.get_blocked_domains(&now).unwrap();
     assert!(!blocked_after_start.contains(&"youtube.com".to_string()));
+    assert!(blocked_after_start.contains(&"pornhub.com".to_string()));
 
     // 3. Advance time by 10 minutes and pause / stop session
     let ten_mins_later = now + Duration::minutes(10);

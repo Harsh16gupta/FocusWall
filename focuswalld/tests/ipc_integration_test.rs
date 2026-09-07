@@ -142,8 +142,9 @@ async fn test_ipc_socket_full_lifecycle() {
     let resp = send_ipc_request(&mut stream, &IpcRequest::GetStatus).await.unwrap();
     match resp {
         IpcResponse::Status { policies, .. } => {
-            assert_eq!(policies.len(), 1);
-            assert_eq!(policies[0].name, "youtube");
+            assert_eq!(policies.len(), 2);
+            assert!(policies.iter().any(|p| p.name == "youtube"));
+            assert!(policies.iter().any(|p| p.name == "adult_content"));
         }
         other => panic!("Unexpected response: {:?}", other),
     }
